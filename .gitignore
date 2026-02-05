@@ -35,6 +35,7 @@ yarn-error.log*
 
 # local secrets / runtime outputs
 opencode.json
+opencode.json.bak
 /workspace/
 
 # vercel

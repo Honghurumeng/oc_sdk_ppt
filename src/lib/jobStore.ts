@@ -22,7 +22,7 @@ export type PptJobEvent =
   | { type: "log"; message: string; ts: number }
   | { type: "status"; status: PptJobStatus; ts: number }
   | { type: "outline"; outlineMarkdown: string; ts: number }
-  | { type: "result"; pptxPath: string; thumbnailsPath: string; ts: number }
+  | { type: "result"; pptxPath: string; thumbnailsPath?: string | null; ts: number }
   | { type: "error"; message: string; ts: number };
 
 export type PptJob = {

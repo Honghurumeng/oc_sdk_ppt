@@ -2,7 +2,7 @@
 
 一个最小可跑通的 Demo：
 
-- 前端：网页输入 PPT 主题/语言/页数/受众/风格
+- 前端：Next.js + MUI（Material UI），网页输入 PPT 主题/语言/页数/受众/风格
 - 后端：使用 `@opencode-ai/sdk` 创建/连接 opencode server，并驱动 LLM 生成 `deck.pptx`
 - 预览：生成 `thumbnails.jpg`，页面直接展示
 
@@ -10,6 +10,7 @@
 
 ```bash
 cd web
+npm install
 npm run dev
 ```
 
@@ -17,13 +18,34 @@ npm run dev
 
 生成产物会写到：`web/workspace/jobs/<jobId>/`
 
+生产构建：
+
+```bash
+cd web
+npm run build
+```
+
 ## 环境变量（可选）
 
 你可以让 Web 后端连接已有的 opencode server：
 
-- `OPENCODE_BASE_URL=http://localhost:4096`
+- `OPENCODE_BASE_URL=http://localhost:5937`
 
-或者让 Web 后端自动启动一个 opencode server（默认 hostname=127.0.0.1, port=4096）。
+或者让 Web 后端自动启动一个 opencode server（默认 hostname=127.0.0.1, port=5937）。
+
+为了避免服务裸奔，内嵌 server 默认会设置密码：
+
+- `OPENCODE_SERVER_PASSWORD=oc-ppt-agent`
+
+Web 后端会用该密码以 HTTP Basic 的方式访问 opencode server：
+
+- 用户名固定为 `opencode`
+- 密码为 `OPENCODE_SERVER_PASSWORD`
+
+你可以通过环境变量覆盖端口/密码：
+
+- `OPENCODE_PORT=5937`
+- `OPENCODE_SERVER_PASSWORD=oc-ppt-agent`
 
 指定模型（如果你想固定某个 provider/model）：
 
@@ -41,7 +63,7 @@ npm run dev
 
 ## LLM 配置
 
-页面底部提供 LLM 配置表单：
+页面右上角导航栏（Nav）提供入口：点击 "LLM 配置" 打开对话框（Dialog）。默认不显示。
 
 - `GET /api/opencode/config` -> 读取（apiKey 会脱敏）
 - `POST /api/opencode/config` -> 写入 `web/opencode.json`

@@ -94,8 +94,15 @@ export default function LlmConfigForm({ embedded }: { embedded?: boolean }) {
       const ids = Object.keys(providers).sort();
       setProviderIds(ids);
 
+      // When user picks "+ 新增供应商" ("__new__"), providers["__new__"] is always falsy.
+      // If we don't special-case it, we will fall back to the previously selected provider
+      // and the UI looks like "no response".
       const pid =
-        (selectProviderId && providers[selectProviderId] ? selectProviderId : null) ??
+        (selectProviderId === "__new__"
+          ? "__new__"
+          : selectProviderId && providers[selectProviderId]
+            ? selectProviderId
+            : null) ??
         (selectedProviderId !== "__new__" && providers[selectedProviderId]
           ? selectedProviderId
           : null) ??
@@ -166,20 +173,26 @@ export default function LlmConfigForm({ embedded }: { embedded?: boolean }) {
         throw new Error((data.error as string) ?? "Failed to write config");
       }
 
-      const reloadRes = await fetch("/api/opencode/reload", { method: "POST" });
-      const reloadData = (await reloadRes
-        .json()
-        .catch(() => ({}))) as Record<string, unknown>;
-      if (!reloadRes.ok || reloadData.ok !== true) {
-        throw new Error(
-          (reloadData.reason as string) ??
+      let reloadProblem: string | null = null;
+      try {
+        const reloadRes = await fetch("/api/opencode/reload", { method: "POST" });
+        const reloadData = (await reloadRes
+          .json()
+          .catch(() => ({}))) as Record<string, unknown>;
+        if (!reloadRes.ok || reloadData.ok !== true) {
+          reloadProblem =
+            (reloadData.reason as string) ??
             (reloadData.error as string) ??
-            "Reload failed"
-        );
+            "Reload failed";
+        }
+      } catch (e) {
+        reloadProblem = e instanceof Error ? e.message : String(e);
       }
 
       setMessage(
-        "保存成功，已重载 opencode server。新创建的 session 会立即使用该 provider/model。"
+        reloadProblem
+          ? `保存成功，但重载失败：${reloadProblem}`
+          : "保存成功，已重载 opencode server。新创建的 session 会立即使用该 provider/model。"
       );
       setApiKey("");
       await load(providerId.trim());
@@ -210,19 +223,23 @@ export default function LlmConfigForm({ embedded }: { embedded?: boolean }) {
         throw new Error((data.error as string) ?? "Failed to delete provider");
       }
 
-      const reloadRes = await fetch("/api/opencode/reload", { method: "POST" });
-      const reloadData = (await reloadRes
-        .json()
-        .catch(() => ({}))) as Record<string, unknown>;
-      if (!reloadRes.ok || reloadData.ok !== true) {
-        throw new Error(
-          (reloadData.reason as string) ??
+      let reloadProblem: string | null = null;
+      try {
+        const reloadRes = await fetch("/api/opencode/reload", { method: "POST" });
+        const reloadData = (await reloadRes
+          .json()
+          .catch(() => ({}))) as Record<string, unknown>;
+        if (!reloadRes.ok || reloadData.ok !== true) {
+          reloadProblem =
+            (reloadData.reason as string) ??
             (reloadData.error as string) ??
-            "Reload failed"
-        );
+            "Reload failed";
+        }
+      } catch (e) {
+        reloadProblem = e instanceof Error ? e.message : String(e);
       }
 
-      setMessage("删除成功，已重载 opencode server。");
+      setMessage(reloadProblem ? `删除成功，但重载失败：${reloadProblem}` : "删除成功，已重载 opencode server。");
       await load();
 
       // 通知 PPT 表单刷新模型下拉框
