@@ -29,6 +29,9 @@ export async function POST(req: Request) {
     slideCount: obj.slideCount ? Number(obj.slideCount) : undefined,
     audience: obj.audience ? String(obj.audience) : undefined,
     tone: obj.tone ? String(obj.tone) : undefined,
+    referenceContent: obj.referenceContent
+      ? String(obj.referenceContent).trim()
+      : undefined,
     stylePreset: obj.stylePreset ? String(obj.stylePreset) : undefined,
     palette: obj.palette ? String(obj.palette) : undefined,
     model: obj.model ? String(obj.model) : undefined,

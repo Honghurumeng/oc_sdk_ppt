@@ -26,7 +26,7 @@ type JobResponse = {
   logs: { ts: number; message: string }[];
   outlineMarkdown?: string | null;
   pptxUrl: string | null;
-  thumbnailsUrl: string | null;
+  thumbnailsUrl?: string | null;
 };
 
 function fmtTime(ts: number) {
@@ -43,6 +43,7 @@ export default function PptJobForm() {
   const [slideCount, setSlideCount] = useState(8);
   const [audience, setAudience] = useState("一般受众");
   const [tone, setTone] = useState("专业、清晰、偏实用");
+  const [referenceContent, setReferenceContent] = useState("");
   const [stylePreset, setStylePreset] = useState("Editorial");
   const [palette, setPalette] = useState("Sand & Ink");
   const [model, setModel] = useState<string>("");
@@ -56,10 +57,11 @@ export default function PptJobForm() {
   const [logs, setLogs] = useState<{ ts: number; message: string }[]>([]);
   const [outlineMarkdown, setOutlineMarkdown] = useState<string>("");
   const [pptxUrl, setPptxUrl] = useState<string | null>(null);
-  const [thumbnailsUrl, setThumbnailsUrl] = useState<string | null>(null);
 
   const esRef = useRef<EventSource | null>(null);
+  const pollRef = useRef<number | null>(null);
   const tailRef = useRef<HTMLDivElement | null>(null);
+  const seenLogRef = useRef<Set<string>>(new Set());
 
   const canSubmit = useMemo(() => topic.trim().length > 0, [topic]);
 
@@ -91,15 +93,48 @@ export default function PptJobForm() {
 
   async function refreshJob(id: string) {
     const res = await fetch(`/api/ppt/jobs/${id}`, { cache: "no-store" });
-    if (!res.ok) return;
+    if (!res.ok) {
+      let msg = "查询任务状态失败";
+      if (res.status === 404) {
+        msg = `任务不存在或服务已重启（jobId=${id}）。如果已生成产物，请检查 workspace/jobs/${id}/`; 
+      } else {
+        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        if (typeof data.error === "string" && data.error.trim()) msg = data.error;
+      }
+      setError(msg);
+      setStatus("error");
+      return;
+    }
+
     const data = (await res.json()) as JobResponse;
     setStatus(data.status);
     setSessionId(data.sessionId);
     setError(data.error);
-    setLogs(data.logs ?? []);
+    const nextLogs = data.logs ?? [];
+    setLogs(nextLogs);
+    seenLogRef.current = new Set(nextLogs.map((l) => `${l.ts}|${l.message}`));
     if (typeof data.outlineMarkdown === "string") setOutlineMarkdown(data.outlineMarkdown);
     setPptxUrl(data.pptxUrl);
-    setThumbnailsUrl(data.thumbnailsUrl);
+
+    if (data.status !== "queued" && data.status !== "running") {
+      if (pollRef.current) {
+        window.clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    }
+  }
+
+  function startPolling(id: string) {
+    if (pollRef.current) return;
+    pollRef.current = window.setInterval(() => {
+      void refreshJob(id);
+    }, 1500);
+  }
+
+  function stopPolling() {
+    if (!pollRef.current) return;
+    window.clearInterval(pollRef.current);
+    pollRef.current = null;
   }
 
   async function start() {
@@ -107,7 +142,7 @@ export default function PptJobForm() {
     setLogs([]);
     setOutlineMarkdown("");
     setPptxUrl(null);
-    setThumbnailsUrl(null);
+    seenLogRef.current = new Set();
 
     const res = await fetch("/api/ppt/jobs", {
       method: "POST",
@@ -118,6 +153,7 @@ export default function PptJobForm() {
         slideCount,
         audience,
         tone,
+        referenceContent: referenceContent.trim() || undefined,
         stylePreset,
         palette,
         model: model || undefined,
@@ -133,15 +169,27 @@ export default function PptJobForm() {
     const id = String(data.jobId);
     setJobId(id);
     setStatus("queued");
-    await refreshJob(id);
 
+    // 先连 SSE，再 refresh，避免“日志重放 + refresh”造成重复
     esRef.current?.close();
     const es = new EventSource(`/api/ppt/jobs/${id}/events`);
     esRef.current = es;
 
+    startPolling(id);
+
+    await refreshJob(id);
+
     es.addEventListener("log", (ev) => {
       try {
         const payload = JSON.parse((ev as MessageEvent).data);
+        const key = `${payload.ts}|${payload.message}`;
+        if (seenLogRef.current.has(key)) return;
+        seenLogRef.current.add(key);
+        if (seenLogRef.current.size > 1200) {
+          // 防止长时间运行导致内存增长
+          const next = new Set(Array.from(seenLogRef.current).slice(-900));
+          seenLogRef.current = next;
+        }
         setLogs((cur) => [...cur, payload]);
       } catch {
         // ignore
@@ -152,6 +200,9 @@ export default function PptJobForm() {
       try {
         const payload = JSON.parse((ev as MessageEvent).data);
         setStatus(payload.status);
+        if (payload.status !== "queued" && payload.status !== "running") {
+          stopPolling();
+        }
       } catch {
         // ignore
       }
@@ -171,6 +222,7 @@ export default function PptJobForm() {
     const finish = async () => {
       await refreshJob(id);
       es.close();
+      stopPolling();
     };
 
     es.addEventListener("result", () => void finish());
@@ -211,6 +263,7 @@ export default function PptJobForm() {
     return () => {
       window.removeEventListener("opencode:models-changed", onModelsChanged);
       esRef.current?.close();
+      stopPolling();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -279,6 +332,24 @@ export default function PptJobForm() {
               size="small"
             />
           </Stack>
+
+          <TextField
+            label="参考内容（可选）"
+            value={referenceContent}
+            onChange={(e) => setReferenceContent(e.target.value)}
+            placeholder="可粘贴材料要点/链接/术语解释/你希望覆盖的事实（生成大纲时会一起提供给模型）"
+            multiline
+            minRows={6}
+            size="small"
+            sx={{ width: { xs: "100%", sm: 720 } }}
+            InputProps={{
+              sx: {
+                "& textarea": {
+                  resize: "vertical",
+                },
+              },
+            }}
+          />
 
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
             <TextField
@@ -368,12 +439,6 @@ export default function PptJobForm() {
                 </Typography>
               ) : null}
             </Stack>
-
-            {pptxUrl ? (
-              <Link href={pptxUrl} underline="hover" sx={{ fontWeight: 700 }}>
-                下载 PPTX
-              </Link>
-            ) : null}
           </Stack>
 
           {jobId && outlineMarkdown ? (
@@ -434,23 +499,11 @@ export default function PptJobForm() {
             <div ref={tailRef} />
           </Paper>
 
-          {thumbnailsUrl ? (
-            <Stack spacing={1}>
-              <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                预览（缩略图网格）
-              </Typography>
-              <Box
-                component="img"
-                src={thumbnailsUrl}
-                alt="thumbnails"
-                sx={{
-                  width: "100%",
-                  height: "auto",
-                  borderRadius: 2,
-                  border: "1px solid",
-                  borderColor: "divider",
-                }}
-              />
+          {pptxUrl ? (
+            <Stack direction="row" justifyContent="flex-end">
+              <Button component="a" href={pptxUrl} variant="outlined">
+                下载 PPTX
+              </Button>
             </Stack>
           ) : null}
         </Stack>

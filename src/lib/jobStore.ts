@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
 
 export type PptJobStatus =
   | "queued"
@@ -13,6 +15,7 @@ export type PptJobInput = {
   slideCount?: number;
   audience?: string;
   tone?: string;
+  referenceContent?: string;
   stylePreset?: string;
   palette?: string;
   model?: string; // provider/model
@@ -44,6 +47,166 @@ export type PptJob = {
 const jobs = new Map<string, PptJob>();
 const emitters = new Map<string, EventEmitter>();
 
+function safeJsonParse<T>(s: string): T | null {
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return null;
+  }
+}
+
+function isSafeId(id: string) {
+  return /^[a-z0-9]+$/i.test(id);
+}
+
+function absJobDir(jobId: string) {
+  // CWD is expected to be the Next.js app root (web/)
+  return path.join(process.cwd(), "workspace", "jobs", jobId);
+}
+
+function absJobStatePath(jobId: string) {
+  return path.join(absJobDir(jobId), "job.json");
+}
+
+function absOutlinePath(jobId: string) {
+  return path.join(absJobDir(jobId), "outline.md");
+}
+
+function absPptxPath(jobId: string) {
+  return path.join(absJobDir(jobId), "deck.pptx");
+}
+
+function absThumbPath(jobId: string) {
+  return path.join(absJobDir(jobId), "thumbnails.jpg");
+}
+
+function inferFromOutline(md: string) {
+  const lines = md.split("\n");
+  let title: string | null = null;
+  let slideCount = 0;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!title && line.startsWith("# ")) {
+      title = line.slice(2).trim() || null;
+    }
+    if (/^##\s+Slide\s+\d+\s*:/i.test(line)) {
+      slideCount++;
+    }
+  }
+  return {
+    title: title ?? "PPT",
+    slideCount: slideCount > 0 ? slideCount : undefined,
+  };
+}
+
+function tryRehydrateJob(jobId: string): PptJob | null {
+  if (!isSafeId(jobId)) return null;
+
+  const statePath = absJobStatePath(jobId);
+  const outlineAbs = absOutlinePath(jobId);
+  const pptxAbs = absPptxPath(jobId);
+  const thumbAbs = absThumbPath(jobId);
+
+  // 1) Prefer persisted state
+  try {
+    const raw = fs.readFileSync(statePath, "utf-8");
+    const parsed = safeJsonParse<PptJob>(raw);
+    if (parsed && parsed.id === jobId) {
+      // Best-effort: refill outlineMarkdown from disk if missing.
+      if (!parsed.outlineMarkdown && parsed.outlinePath) {
+        try {
+          const md = fs.readFileSync(path.join(process.cwd(), parsed.outlinePath), "utf-8");
+          parsed.outlineMarkdown = md;
+        } catch {
+          // ignore
+        }
+      }
+      return parsed;
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2) Fallback: infer from existing artifacts on disk (for older runs)
+  let outlineMarkdown: string | null = null;
+  try {
+    outlineMarkdown = fs.readFileSync(outlineAbs, "utf-8");
+  } catch {
+    outlineMarkdown = null;
+  }
+
+  let hasPptx = false;
+  try {
+    hasPptx = fs.statSync(pptxAbs).isFile();
+  } catch {
+    hasPptx = false;
+  }
+
+  let hasThumb = false;
+  try {
+    hasThumb = fs.statSync(thumbAbs).isFile();
+  } catch {
+    hasThumb = false;
+  }
+
+  if (!outlineMarkdown && !hasPptx && !hasThumb) {
+    return null;
+  }
+
+  const inferred = outlineMarkdown ? inferFromOutline(outlineMarkdown) : null;
+  const outputDir = `workspace/jobs/${jobId}`;
+  const now = Date.now();
+
+  const status: PptJobStatus = hasPptx
+    ? "done"
+    : outlineMarkdown
+      ? "awaiting_approval"
+      : "queued";
+
+  const job: PptJob = {
+    id: jobId,
+    input: {
+      topic: inferred?.title ?? "PPT",
+      language: "中文",
+      slideCount: inferred?.slideCount,
+    },
+    status,
+    createdAt: now,
+    updatedAt: now,
+    outputDir,
+    outlinePath: outlineMarkdown ? `${outputDir}/outline.md` : undefined,
+    outlineMarkdown: outlineMarkdown ?? undefined,
+    pptxPath: hasPptx ? `${outputDir}/deck.pptx` : undefined,
+    thumbnailsPath: hasThumb ? `${outputDir}/thumbnails.jpg` : undefined,
+    logs: [],
+  };
+
+  return job;
+}
+
+function persistJob(job: PptJob) {
+  if (!isSafeId(job.id)) return;
+  const absDir = absJobDir(job.id);
+  const absState = absJobStatePath(job.id);
+
+  const data: PptJob = {
+    ...job,
+    // Don't persist unlimited logs; keep it bounded.
+    logs: job.logs.slice(-300),
+  };
+
+  queueMicrotask(() => {
+    void (async () => {
+      try {
+        await fs.promises.mkdir(absDir, { recursive: true });
+        await fs.promises.writeFile(absState, JSON.stringify(data, null, 2), "utf-8");
+      } catch {
+        // ignore
+      }
+    })();
+  });
+}
+
 function getEmitter(jobId: string) {
   let e = emitters.get(jobId);
   if (!e) {
@@ -57,10 +220,19 @@ function getEmitter(jobId: string) {
 export function createJob(job: PptJob) {
   jobs.set(job.id, job);
   getEmitter(job.id);
+  persistJob(job);
 }
 
 export function getJob(jobId: string) {
-  return jobs.get(jobId) ?? null;
+  const inMem = jobs.get(jobId);
+  if (inMem) return inMem;
+
+  const rehydrated = tryRehydrateJob(jobId);
+  if (!rehydrated) return null;
+  jobs.set(jobId, rehydrated);
+  getEmitter(jobId);
+  persistJob(rehydrated);
+  return rehydrated;
 }
 
 export function setJob(jobId: string, update: Partial<PptJob>) {
@@ -72,6 +244,7 @@ export function setJob(jobId: string, update: Partial<PptJob>) {
     updatedAt: Date.now(),
   };
   jobs.set(jobId, next);
+  persistJob(next);
   return next;
 }
 

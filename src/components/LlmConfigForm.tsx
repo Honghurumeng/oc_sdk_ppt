@@ -336,29 +336,32 @@ export default function LlmConfigForm({ embedded }: { embedded?: boolean }) {
           />
         </Stack>
 
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "flex-end" }}>
-          <Box sx={{ flex: 1 }}>
-            <FormControl fullWidth size="small">
-              <InputLabel id="provider-type-label">供应商类型</InputLabel>
-              <Select
-                labelId="provider-type-label"
-                label="供应商类型"
-                value={providerType}
-                onChange={(e) => setProviderType(e.target.value as ProviderType)}
-              >
-                {PROVIDER_TYPES.map((p) => (
-                  <MenuItem key={p.value} value={p.value}>
-                    {p.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <Typography variant="caption" sx={{ color: "text.secondary" }}>
-              npm: <code>{providerNpm}</code>
-            </Typography>
-          </Box>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+            columnGap: 1.5,
+            rowGap: 0.5,
+            alignItems: { sm: "center" },
+          }}
+        >
+          <FormControl fullWidth size="small">
+            <InputLabel id="provider-type-label">供应商类型</InputLabel>
+            <Select
+              labelId="provider-type-label"
+              label="供应商类型"
+              value={providerType}
+              onChange={(e) => setProviderType(e.target.value as ProviderType)}
+            >
+              {PROVIDER_TYPES.map((p) => (
+                <MenuItem key={p.value} value={p.value}>
+                  {p.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
 
-          <Box sx={{ flex: 1 }}>
+          <Box>
             {!isNew ? (
               <Button
                 onClick={deleteProvider}
@@ -375,7 +378,11 @@ export default function LlmConfigForm({ embedded }: { embedded?: boolean }) {
               </Typography>
             )}
           </Box>
-        </Stack>
+
+          <Typography variant="caption" sx={{ color: "text.secondary" }}>
+            npm: <code>{providerNpm}</code>
+          </Typography>
+        </Box>
 
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
           <TextField

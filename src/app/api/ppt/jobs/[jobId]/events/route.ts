@@ -33,17 +33,7 @@ export async function GET(
         );
       };
 
-      send("hello", {
-        jobId,
-        status: job.status,
-        ts: Date.now(),
-      });
-
-      // 推送最近日志
-      for (const l of job.logs.slice(-50)) {
-        send("log", l);
-      }
-
+      // 先订阅，避免在握手阶段错过关键事件（status/outline/result）
       const unsubscribe = subscribe(jobId, (evt) => {
         send(evt.type, evt);
         if (evt.type === "error" || evt.type === "result") {
@@ -51,6 +41,37 @@ export async function GET(
           send("flush", { ts: Date.now() });
         }
       });
+
+      // 初始快照：即使前端在订阅前错过事件，也能拿到当前状态/结果
+      send("hello", {
+        jobId,
+        status: job.status,
+        ts: Date.now(),
+      });
+
+      send("status", { type: "status", status: job.status, ts: Date.now() });
+
+      if (job.outlineMarkdown) {
+        send("outline", {
+          type: "outline",
+          outlineMarkdown: job.outlineMarkdown,
+          ts: Date.now(),
+        });
+      }
+
+      if (job.pptxPath) {
+        send("result", {
+          type: "result",
+          pptxPath: job.pptxPath,
+          thumbnailsPath: job.thumbnailsPath ?? null,
+          ts: Date.now(),
+        });
+      }
+
+      // 推送最近日志（给晚加入的连接补齐上下文）
+      for (const l of job.logs.slice(-50)) {
+        send("log", l);
+      }
 
       const ping = setInterval(() => {
         send("ping", { ts: Date.now() });

@@ -28,6 +28,11 @@ function sanitizeOneLine(s: string) {
   return s.replace(/[\r\n\t]+/g, " ").trim();
 }
 
+function sanitizeMultiline(s: string) {
+  // Keep newlines for context blocks, but remove NUL and normalize CRLF.
+  return s.replace(/\0/g, "").replace(/\r\n/g, "\n");
+}
+
 function parseProviderModel(s: string) {
   const v = s.trim();
   const idx = v.indexOf("/");
@@ -58,6 +63,11 @@ function buildOutlineInstruction(jobId: string, input: PptJobInput) {
   const slideCount = Math.max(3, Math.min(20, input.slideCount ?? 8));
   const audience = sanitizeOneLine(input.audience ?? "一般受众");
   const tone = sanitizeOneLine(input.tone ?? "专业、清晰、偏实用");
+  const referenceContentRaw =
+    typeof input.referenceContent === "string" ? input.referenceContent.trim() : "";
+  const referenceContent = referenceContentRaw
+    ? sanitizeMultiline(referenceContentRaw).slice(0, 8000)
+    : "";
 
   // workspace 相对路径：Next 项目根目录下的 web/workspace
   const outDir = `workspace/jobs/${jobId}`;
@@ -72,6 +82,11 @@ function buildOutlineInstruction(jobId: string, input: PptJobInput) {
     `页数：${slideCount}`,
     `受众：${audience}`,
     `语气/风格：${tone}`,
+    referenceContent
+      ? "\n参考内容（供引用；不要生搬硬套，必要时可压缩改写；可能包含多行）：\n```text\n" +
+        referenceContent +
+        "\n```\n"
+      : "",
     "",
     "强制输出路径（必须严格一致）：",
     `- 输出目录：${outDir}`,
@@ -102,15 +117,13 @@ function buildDeckInstruction(jobId: string, input: PptJobInput) {
   const slidesDir = `${outDir}/slides`;
   const outlinePath = `${outDir}/outline.md`;
   const pptxPath = `${outDir}/deck.pptx`;
-  const thumbsPrefix = `${outDir}/thumbnails`;
-  const thumbsPath = `${outDir}/thumbnails.jpg`;
 
   const stylePreset = sanitizeOneLine(input.stylePreset ?? "Editorial");
   const palette = sanitizeOneLine(input.palette ?? "Sand & Ink");
 
   const instruction = [
     "你是一个 PPT 生成助手。你可以使用 shell/文件工具在当前工作区内创建文件并运行脚本。",
-    "目标：基于已存在的大纲文件生成每一页的 HTML slide（仅生成 HTML，不需要生成 PPTX/缩略图）。",
+    "目标：基于已存在的大纲文件生成每一页的 HTML slide（仅生成 HTML，不需要生成 PPTX）。",
     "",
     `主题：${topic}`,
     `语言：${language}`,
@@ -145,7 +158,7 @@ function buildDeckInstruction(jobId: string, input: PptJobInput) {
     "最后只输出：DONE + slides 目录路径，不要输出大段解释。",
   ].join("\n");
 
-  return { instruction, outDir, pptxPath, thumbsPath, outlinePath };
+  return { instruction, outDir, pptxPath, outlinePath };
 }
 
 function buildHtmlFixInstruction(slidesDir: string, errors: string) {
@@ -213,13 +226,11 @@ async function ensureExpectedSlides(jobId: string, slidesDir: string, expected: 
   log(jobId, `HTML slides 已生成：${files.length} 个`);
 }
 
-async function buildDeckAndThumbnails(
+async function buildDeck(
   jobId: string,
   input: PptJobInput,
   slidesDir: string,
-  pptxPath: string,
-  thumbsPrefix: string,
-  thumbsPath: string
+  pptxPath: string
 ) {
   log(jobId, "本地构建 PPTX（node 脚本）…");
 
@@ -251,41 +262,10 @@ async function buildDeckAndThumbnails(
     throw new Error(`PPTX 构建失败：${hint}`);
   }
 
-  const absThumbs = path.join(process.cwd(), thumbsPath);
   const pptxStat = await fs.stat(absPptx);
   if (pptxStat.size <= 0) {
     throw new Error("PPTX 生成完成但文件为空");
   }
-
-  log(jobId, "本地生成缩略图…");
-  const absThumbsPrefix = path.join(process.cwd(), thumbsPrefix);
-  const thumbScript = path.join(process.cwd(), "..", "pptx", "scripts", "thumbnail.py");
-  try {
-    await execFileAsync(
-      "python",
-      [thumbScript, absPptx, absThumbsPrefix, "--cols", "4"],
-      { cwd: process.cwd() }
-    );
-  } catch (e) {
-    const err = e as any;
-    const stderr = typeof err?.stderr === "string" ? err.stderr : "";
-    const hint = stderr.trim() ? stderr.trim() : err?.message ? String(err.message) : String(e);
-    log(jobId, `缩略图生成失败（将跳过预览图）：${hint}`);
-    return { thumbnailsOk: false };
-  }
-
-  try {
-    const thumbsStat = await fs.stat(absThumbs);
-    if (thumbsStat.size <= 0) {
-      log(jobId, "缩略图文件生成成功但为空（将跳过预览图）");
-      return { thumbnailsOk: false };
-    }
-  } catch {
-    log(jobId, "缩略图文件未生成（将跳过预览图）");
-    return { thumbnailsOk: false };
-  }
-
-  return { thumbnailsOk: true };
 }
 
 async function readTextIfExists(p: string) {
@@ -360,18 +340,34 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
   try {
     const slideCount = Math.max(3, Math.min(20, input.slideCount ?? 8));
 
+    const { client } = await getOpencodeHandle();
+
+    // Dev 模式/服务重启后，jobStore 可能被清空；此时可从磁盘恢复 outline，但 sessionId 会丢失。
+    // Deck 阶段允许重新创建一个 session 继续执行。
     if (!job.sessionId) {
-      throw new Error("缺少 sessionId：请先生成大纲");
+      log(jobId, "sessionId 缺失，创建新的 opencode session…");
+      const session = unwrapData<{ id: string }>(
+        await client.session.create({
+          body: { title: `PPT Deck: ${sanitizeOneLine(input.topic).slice(0, 60)}` },
+        })
+      );
+      if (!session?.id) {
+        throw new Error("创建 opencode session 失败：未返回 session.id（请检查服务鉴权/日志）");
+      }
+      setJob(jobId, { sessionId: session.id });
+      log(jobId, `sessionId=${session.id}`);
     }
 
-    const { client } = await getOpencodeHandle();
-    const { instruction, pptxPath, thumbsPath, outlinePath } = buildDeckInstruction(
+    const sessionId = getJob(jobId)?.sessionId;
+    if (!sessionId) {
+      throw new Error("缺少 sessionId：无法继续生成 PPT");
+    }
+    const { instruction, pptxPath, outlinePath } = buildDeckInstruction(
       jobId,
       input
     );
 
     const slidesDir = `${path.posix.dirname(pptxPath)}/slides`;
-    const thumbsPrefix = `${path.posix.dirname(pptxPath)}/thumbnails`;
 
     const absOutline = path.join(process.cwd(), outlinePath);
     const outlineMarkdown = await readTextIfExists(absOutline);
@@ -383,7 +379,7 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
     let promptError: string | null = null;
     try {
       await client.session.prompt({
-        path: { id: job.sessionId },
+        path: { id: sessionId },
         body: {
           parts: [{ type: "text", text: instruction }],
           model: getModelOverride(input),
@@ -399,26 +395,10 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
     // Try building locally; if HTML validation fails, ask LLM to fix the HTML and retry.
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const built = await buildDeckAndThumbnails(
-          jobId,
-          input,
-          slidesDir,
-          pptxPath,
-          thumbsPrefix,
-          thumbsPath
-        );
+        await buildDeck(jobId, input, slidesDir, pptxPath);
 
-        setJob(jobId, {
-          pptxPath,
-          thumbnailsPath: built.thumbnailsOk ? thumbsPath : undefined,
-        });
-
-        pushEvent(jobId, {
-          type: "result",
-          pptxPath,
-          thumbnailsPath: built.thumbnailsOk ? thumbsPath : null,
-          ts: now(),
-        });
+        setJob(jobId, { pptxPath, thumbnailsPath: undefined });
+        pushEvent(jobId, { type: "result", pptxPath, thumbnailsPath: null, ts: now() });
         break;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -430,7 +410,7 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
         const fixInstruction = buildHtmlFixInstruction(slidesDir, msg);
         try {
           await client.session.prompt({
-            path: { id: job.sessionId },
+            path: { id: sessionId },
             body: {
               parts: [{ type: "text", text: fixInstruction }],
               model: getModelOverride(input),
