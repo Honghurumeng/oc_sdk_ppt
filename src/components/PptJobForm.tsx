@@ -340,12 +340,15 @@ export default function PptJobForm() {
             placeholder="可粘贴材料要点/链接/术语解释/你希望覆盖的事实（生成大纲时会一起提供给模型）"
             multiline
             minRows={6}
+            maxRows={12}
             size="small"
-            sx={{ width: { xs: "100%", sm: 720 } }}
+            fullWidth
             InputProps={{
               sx: {
                 "& textarea": {
                   resize: "vertical",
+                  maxHeight: 260,
+                  overflow: "auto",
                 },
               },
             }}
