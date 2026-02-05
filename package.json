@@ -10,6 +10,11 @@
   },
   "dependencies": {
     "@opencode-ai/sdk": "^1.1.51",
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/icons-material": "^7.3.2",
+    "@mui/material": "^7.3.2",
+    "@mui/material-nextjs": "^7.3.2",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3"

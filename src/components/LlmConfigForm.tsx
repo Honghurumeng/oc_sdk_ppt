@@ -2,6 +2,20 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
+import Divider from "@mui/material/Divider";
+import FormControl from "@mui/material/FormControl";
+import InputLabel from "@mui/material/InputLabel";
+import MenuItem from "@mui/material/MenuItem";
+import Select from "@mui/material/Select";
+import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
+
 type ProviderType = "openai-compatible" | "openai" | "google" | "anthropic";
 
 type ProviderEntry = {
@@ -36,7 +50,7 @@ function inferProviderType(npm: string | undefined): ProviderType {
   return hit?.value ?? "openai-compatible";
 }
 
-export default function LlmConfigForm() {
+export default function LlmConfigForm({ embedded }: { embedded?: boolean }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -246,221 +260,192 @@ export default function LlmConfigForm() {
   }, []);
 
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          flexWrap: "wrap",
-          alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <div>
-          <div style={{ fontWeight: 700 }}>LLM 配置</div>
-          <div style={{ fontSize: 12, opacity: 0.7 }}>
+    <Stack spacing={2}>
+      {!embedded ? (
+        <Box>
+          <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: -0.2 }}>
+            LLM 配置
+          </Typography>
+          <Typography variant="body2" sx={{ color: "text.secondary" }}>
             写入 <code>web/opencode.json</code>，并重载内嵌 opencode server。
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={() => void load()} disabled={loading || saving}>
-            刷新
-          </button>
-        </div>
-      </div>
-
-      {error ? (
-        <div
-          style={{
-            padding: 12,
-            border: "1px solid rgba(255,0,0,0.25)",
-            background: "rgba(255,0,0,0.06)",
-            borderRadius: 10,
-            color: "#7a1a1a",
-          }}
-        >
-          {error}
-        </div>
+          </Typography>
+        </Box>
       ) : null}
 
-      {message ? (
-        <div
-          style={{
-            padding: 12,
-            border: "1px solid rgba(0,140,90,0.25)",
-            background: "rgba(0,140,90,0.06)",
-            borderRadius: 10,
-            color: "#0b4b31",
-          }}
-        >
-          {message}
-        </div>
-      ) : null}
+      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
+        <Typography variant="body2" sx={{ color: "text.secondary" }}>
+          {loading ? "加载中..." : saving ? "保存中..." : ""}
+        </Typography>
+        <Button onClick={() => void load()} disabled={loading || saving} variant="outlined">
+          刷新
+        </Button>
+      </Stack>
 
-      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>已配置供应商</div>
-          <select
-            value={selectedProviderId}
-            onChange={(e) => void load(e.target.value)}
-            style={{ width: "100%", padding: "10px 12px", borderRadius: 10 }}
-          >
-            <option value="__new__">+ 新增供应商</option>
-            {providerIds.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
-        </label>
+      {error ? <Alert severity="error">{error}</Alert> : null}
+      {message ? <Alert severity="success">{message}</Alert> : null}
 
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>供应商名称（providerId）</div>
-          <input
+      <Stack spacing={2}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+          <FormControl fullWidth size="small">
+            <InputLabel id="provider-select-label">已配置供应商</InputLabel>
+            <Select
+              labelId="provider-select-label"
+              label="已配置供应商"
+              value={selectedProviderId}
+              onChange={(e) => void load(String(e.target.value))}
+            >
+              <MenuItem value="__new__">+ 新增供应商</MenuItem>
+              {providerIds.map((id) => (
+                <MenuItem key={id} value={id}>
+                  {id}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          <TextField
+            label="供应商名称（providerId）"
             value={providerId}
-            onChange={(e) => setProviderId(e.target.value.trim())}
+            onChange={(e) => setProviderId(e.target.value)}
             disabled={!isNew}
             placeholder="例如：openai / anthropic / myprovider"
-            style={{ width: "100%" }}
+            fullWidth
+            size="small"
+            helperText={
+              !isNew
+                ? "已存在的 providerId 为键，不建议在线改名（删除后重建更安全）。"
+                : ""
+            }
           />
-          {!isNew ? (
-            <div style={{ fontSize: 12, opacity: 0.6, marginTop: 6 }}>
-              已存在的 providerId 为键，不建议在线改名（删除后重建更安全）。
-            </div>
-          ) : null}
-        </label>
-      </div>
+        </Stack>
 
-      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>供应商类型</div>
-          <select
-            value={providerType}
-            onChange={(e) => setProviderType(e.target.value as ProviderType)}
-            style={{ width: "100%", padding: "10px 12px", borderRadius: 10 }}
-          >
-            {PROVIDER_TYPES.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-          <div style={{ fontSize: 12, opacity: 0.6, marginTop: 6 }}>
-            npm: <code>{providerNpm}</code>
-          </div>
-        </label>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "flex-end" }}>
+          <Box sx={{ flex: 1 }}>
+            <FormControl fullWidth size="small">
+              <InputLabel id="provider-type-label">供应商类型</InputLabel>
+              <Select
+                labelId="provider-type-label"
+                label="供应商类型"
+                value={providerType}
+                onChange={(e) => setProviderType(e.target.value as ProviderType)}
+              >
+                {PROVIDER_TYPES.map((p) => (
+                  <MenuItem key={p.value} value={p.value}>
+                    {p.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              npm: <code>{providerNpm}</code>
+            </Typography>
+          </Box>
 
-        <div style={{ display: "grid", alignContent: "end" }}>
-          {!isNew ? (
-            <button
-              onClick={deleteProvider}
-              disabled={loading || saving}
-              style={{ background: "rgba(140,0,0,0.92)" }}
-            >
-              删除该供应商
-            </button>
-          ) : (
-            <div style={{ fontSize: 12, opacity: 0.65 }}>
-              新增供应商：填写完下面信息后点“保存并重载”。
-            </div>
-          )}
-        </div>
-      </div>
+          <Box sx={{ flex: 1 }}>
+            {!isNew ? (
+              <Button
+                onClick={deleteProvider}
+                disabled={loading || saving}
+                variant="contained"
+                color="error"
+                fullWidth
+              >
+                删除该供应商
+              </Button>
+            ) : (
+              <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                新增供应商：填写完下面信息后点“保存并重载”。
+              </Typography>
+            )}
+          </Box>
+        </Stack>
 
-      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>URL（baseURL）</div>
-          <input
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+          <TextField
+            label="URL（baseURL）"
             value={baseURL}
             onChange={(e) => setBaseURL(e.target.value)}
             placeholder="https://api.xxx.com/v1"
-            style={{ width: "100%" }}
+            fullWidth
+            size="small"
           />
-        </label>
 
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>Key（apiKey）</div>
-          <input
+          <TextField
+            label="Key（apiKey）"
+            type="password"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={hasApiKey ? "留空=保留已保存 key" : "sk-..."}
-            style={{ width: "100%" }}
+            fullWidth
+            size="small"
+            helperText={hasApiKey ? "当前 provider 已保存 key（不会回显）。不修改就保持留空。" : ""}
           />
-          {hasApiKey ? (
-            <div style={{ fontSize: 12, opacity: 0.6, marginTop: 6 }}>
-              当前 provider 已保存 key（不会回显）。不修改就保持留空。
-            </div>
-          ) : null}
-        </label>
-      </div>
+        </Stack>
 
-      <div style={{ display: "grid", gap: 12 }}>
-        <div style={{ fontWeight: 700 }}>模型（同名=展示名）</div>
+        <Divider />
 
-        <div
-          style={{
-            border: "1px solid rgba(0,0,0,0.12)",
-            borderRadius: 12,
-            padding: 12,
-            background: "rgba(255,255,255,0.65)",
-            display: "grid",
-            gap: 10,
-          }}
-        >
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <input
+        <Stack spacing={1}>
+          <Box>
+            <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+              模型
+            </Typography>
+            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              同名 = 展示名
+            </Typography>
+          </Box>
+
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+            <TextField
+              label="新增 modelName"
               value={newModelName}
               onChange={(e) => setNewModelName(e.target.value)}
-              placeholder="新增 modelName，例如：gpt-4.1-mini"
-              style={{ flex: "1 1 320px" }}
+              placeholder="例如：gpt-4.1-mini"
+              fullWidth
+              size="small"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addModel();
+                }
+              }}
             />
-            <button onClick={addModel} disabled={!newModelName.trim()}>
+            <Button
+              onClick={addModel}
+              disabled={!newModelName.trim()}
+              variant="outlined"
+              sx={{ whiteSpace: "nowrap" }}
+            >
               添加模型
-            </button>
-          </div>
+            </Button>
+          </Stack>
 
-          <div style={{ display: "grid", gap: 8 }}>
+          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
             {models.map((m) => (
-              <div
+              <Chip
                 key={m}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 10,
-                  border: "1px solid rgba(0,0,0,0.10)",
-                  borderRadius: 10,
-                  padding: "8px 10px",
-                  background: "rgba(255,255,255,0.85)",
-                }}
-              >
-                <div>
-                  <code>{m}</code>
-                </div>
-                <button
-                  onClick={() => removeModel(m)}
-                  disabled={models.length <= 1}
-                  style={{ background: "rgba(140,0,0,0.92)" }}
-                >
-                  删除
-                </button>
-              </div>
+                label={<code>{m}</code>}
+                onDelete={models.length <= 1 ? undefined : () => removeModel(m)}
+                variant="outlined"
+                sx={{ bgcolor: "rgba(255,255,255,0.55)" }}
+              />
             ))}
-          </div>
-        </div>
-      </div>
+          </Box>
+        </Stack>
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        <button
-          onClick={saveAndReload}
-          disabled={loading || saving || !providerId || !baseURL || models.length === 0}
-        >
-          保存并重载
-        </button>
-        <div style={{ fontSize: 12, opacity: 0.7 }}>
-          会更新当前 provider 的配置；不在列表里的模型会被移除。
-        </div>
-      </div>
-    </div>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
+          <Button
+            onClick={saveAndReload}
+            disabled={loading || saving || !providerId.trim() || !baseURL.trim() || models.length === 0}
+            variant="contained"
+            startIcon={saving ? <CircularProgress size={16} /> : undefined}
+          >
+            保存并重载
+          </Button>
+          <Typography variant="caption" sx={{ color: "text.secondary" }}>
+            会更新当前 provider 的配置；不在列表里的模型会被移除。
+          </Typography>
+        </Stack>
+      </Stack>
+    </Stack>
   );
 }

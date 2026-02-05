@@ -2,6 +2,20 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Divider from "@mui/material/Divider";
+import FormControl from "@mui/material/FormControl";
+import InputLabel from "@mui/material/InputLabel";
+import Link from "@mui/material/Link";
+import MenuItem from "@mui/material/MenuItem";
+import Paper from "@mui/material/Paper";
+import Select from "@mui/material/Select";
+import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
+
 type JobStatus = "queued" | "running" | "awaiting_approval" | "done" | "error";
 
 type JobResponse = {
@@ -19,6 +33,9 @@ function fmtTime(ts: number) {
   const d = new Date(ts);
   return d.toLocaleTimeString();
 }
+
+const monoFontFamily =
+  "var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
 
 export default function PptJobForm() {
   const [topic, setTopic] = useState("");
@@ -203,229 +220,241 @@ export default function PptJobForm() {
   }, [logs.length]);
 
   return (
-    <div>
-      <div style={{ display: "grid", gap: 12 }}>
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>PPT 主题</div>
-          <input
+    <Box>
+      <Stack spacing={2}>
+        <Box>
+          <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: -0.2 }}>
+            生成任务
+          </Typography>
+          <Typography variant="body2" sx={{ color: "text.secondary" }}>
+            先生成可编辑大纲，再确认生成 PPTX。
+          </Typography>
+        </Box>
+
+        <Stack spacing={1.5}>
+          <TextField
+            label="PPT 主题"
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             placeholder="例如：面向新员工的 Git 入门与规范"
-            style={{ width: "100%" }}
+            fullWidth
+            size="small"
           />
-        </label>
 
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-          <label>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>语言</div>
-            <input
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+            <TextField
+              label="语言"
               value={language}
               onChange={(e) => setLanguage(e.target.value)}
               placeholder="中文 / English"
-              style={{ width: "100%" }}
+              fullWidth
+              size="small"
             />
-          </label>
-          <label>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>页数</div>
-            <input
+            <TextField
+              label="页数"
               type="number"
-              min={3}
-              max={20}
+              inputProps={{ min: 3, max: 20 }}
               value={slideCount}
               onChange={(e) => setSlideCount(Number(e.target.value))}
-              style={{ width: "100%" }}
+              fullWidth
+              size="small"
             />
-          </label>
-        </div>
+          </Stack>
 
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-          <label>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>受众</div>
-            <input
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+            <TextField
+              label="受众"
               value={audience}
               onChange={(e) => setAudience(e.target.value)}
               placeholder="例如：产品经理 / 技术团队 / 客户"
-              style={{ width: "100%" }}
+              fullWidth
+              size="small"
             />
-          </label>
-          <label>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>语气/风格</div>
-            <input
+            <TextField
+              label="语气/风格"
               value={tone}
               onChange={(e) => setTone(e.target.value)}
               placeholder="例如：商业路演 / 教学 / 极简"
-              style={{ width: "100%" }}
+              fullWidth
+              size="small"
             />
-          </label>
-        </div>
+          </Stack>
 
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-          <label>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>模板/风格预设</div>
-            <input
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+            <TextField
+              label="模板/风格预设"
               value={stylePreset}
               onChange={(e) => setStylePreset(e.target.value)}
               placeholder="Editorial / Modern Grid / Clean"
-              style={{ width: "100%" }}
+              fullWidth
+              size="small"
             />
-          </label>
-          <label>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>配色方案</div>
-            <input
+            <TextField
+              label="配色方案"
               value={palette}
               onChange={(e) => setPalette(e.target.value)}
               placeholder="Sand & Ink / Teal & Coral"
-              style={{ width: "100%" }}
+              fullWidth
+              size="small"
             />
-          </label>
-        </div>
+          </Stack>
 
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>使用模型（provider/model）</div>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            disabled={modelOptions.length === 0}
-            style={{ width: "100%", padding: "10px 12px", borderRadius: 10 }}
-          >
-            {modelOptions.length === 0 ? (
-              <option value="">(暂无模型，请先在下方配置供应商/模型)</option>
-            ) : (
-              modelOptions.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))
-            )}
-          </select>
-          {modelLoadError ? (
-            <div style={{ marginTop: 6, fontSize: 12, color: "#7a1a1a" }}>
-              {modelLoadError}
-            </div>
-          ) : null}
-        </label>
+          <FormControl fullWidth size="small" disabled={modelOptions.length === 0}>
+            <InputLabel id="model-select-label">使用模型（provider/model）</InputLabel>
+            <Select
+              labelId="model-select-label"
+              label="使用模型（provider/model）"
+              value={model}
+              onChange={(e) => setModel(String(e.target.value))}
+            >
+              {modelOptions.length === 0 ? (
+                <MenuItem value="">
+                  (暂无模型，请先配置供应商/模型)
+                </MenuItem>
+              ) : (
+                modelOptions.map((m) => (
+                  <MenuItem key={m} value={m}>
+                    {m}
+                  </MenuItem>
+                ))
+              )}
+            </Select>
+            {modelLoadError ? (
+              <Typography variant="caption" sx={{ color: "error.main", mt: 0.5 }}>
+                {modelLoadError}
+              </Typography>
+            ) : null}
+          </FormControl>
 
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <button onClick={start} disabled={!canSubmit || modelOptions.length === 0}>
-            生成大纲
-          </button>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>
-            {jobId ? (
-              <span>
-                jobId: <code>{jobId}</code>
-              </span>
-            ) : (
-              <span>提交后会返回 jobId</span>
-            )}
-          </div>
-        </div>
-      </div>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
+            <Button
+              variant="contained"
+              onClick={start}
+              disabled={!canSubmit || modelOptions.length === 0}
+            >
+              生成大纲
+            </Button>
+            <Typography variant="body2" sx={{ color: "text.secondary" }}>
+              {jobId ? (
+                <span>
+                  jobId: <code>{jobId}</code>
+                </span>
+              ) : (
+                <span>提交后会返回 jobId</span>
+              )}
+            </Typography>
+          </Stack>
+        </Stack>
 
-      <div style={{ marginTop: 24, display: "grid", gap: 12 }}>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <div>
-            状态：<b>{status ?? "-"}</b>
-          </div>
-          {sessionId ? (
-            <div>
-              sessionId：<code>{sessionId}</code>
-            </div>
-          ) : null}
-          {pptxUrl ? (
-            <a href={pptxUrl} style={{ textDecoration: "underline" }}>
-              下载 PPTX
-            </a>
-          ) : null}
-        </div>
+        <Divider />
 
-        {jobId && outlineMarkdown ? (
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>大纲（可编辑）</div>
-            <textarea
-              value={outlineMarkdown}
-              onChange={(e) => setOutlineMarkdown(e.target.value)}
-              rows={12}
-              style={{
-                width: "100%",
-                border: "1px solid rgba(0,0,0,0.18)",
-                borderRadius: 12,
-                padding: 12,
-                background: "rgba(255,255,255,0.85)",
-                fontFamily:
-                  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-                fontSize: 12,
-                lineHeight: 1.5,
-              }}
-            />
-            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-              <button onClick={approve} disabled={!jobId}>
-                使用该大纲生成 PPT
-              </button>
-              <div style={{ fontSize: 12, opacity: 0.65 }}>
-                你也可以先修改大纲，再点生成。
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {error ? (
-          <div
-            style={{
-              padding: 12,
-              border: "1px solid rgba(255,0,0,0.25)",
-              background: "rgba(255,0,0,0.06)",
-              borderRadius: 10,
-              color: "#7a1a1a",
+        <Stack spacing={1.5}>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={1}
+            useFlexGap
+            sx={{
+              alignItems: { sm: "center" },
+              justifyContent: "space-between",
             }}
           >
-            错误：{error}
-          </div>
-        ) : null}
+            <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
+              <Typography variant="body2">
+                状态：<b>{status ?? "-"}</b>
+              </Typography>
+              {sessionId ? (
+                <Typography variant="body2">
+                  sessionId：<code>{sessionId}</code>
+                </Typography>
+              ) : null}
+            </Stack>
 
-        <div
-          style={{
-            padding: 12,
-            border: "1px solid rgba(0,0,0,0.12)",
-            borderRadius: 12,
-            background: "rgba(255,255,255,0.7)",
-            minHeight: 120,
-            maxHeight: 240,
-            overflow: "auto",
-            fontFamily:
-              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-            fontSize: 12,
-            lineHeight: 1.5,
-          }}
-        >
-          {logs.length === 0 ? (
-            <div style={{ opacity: 0.6 }}>日志会显示在这里</div>
-          ) : (
-            logs.map((l, idx) => (
-              <div key={`${l.ts}-${idx}`}>
-                <span style={{ opacity: 0.6 }}>[{fmtTime(l.ts)}]</span> {l.message}
-              </div>
-            ))
-          )}
-          <div ref={tailRef} />
-        </div>
+            {pptxUrl ? (
+              <Link href={pptxUrl} underline="hover" sx={{ fontWeight: 700 }}>
+                下载 PPTX
+              </Link>
+            ) : null}
+          </Stack>
 
-        {thumbnailsUrl ? (
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>预览（缩略图网格）</div>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={thumbnailsUrl}
-              alt="thumbnails"
-              style={{
-                width: "100%",
-                height: "auto",
-                borderRadius: 12,
-                border: "1px solid rgba(0,0,0,0.12)",
-              }}
-            />
-          </div>
-        ) : null}
-      </div>
-    </div>
+          {jobId && outlineMarkdown ? (
+            <Stack spacing={1}>
+              <TextField
+                label="大纲（可编辑）"
+                value={outlineMarkdown}
+                onChange={(e) => setOutlineMarkdown(e.target.value)}
+                multiline
+                minRows={12}
+                fullWidth
+                InputProps={{
+                  sx: {
+                    fontFamily: monoFontFamily,
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                  },
+                }}
+              />
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
+                <Button variant="contained" onClick={approve} disabled={!jobId}>
+                  使用该大纲生成 PPT
+                </Button>
+                <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                  你也可以先修改大纲，再点生成。
+                </Typography>
+              </Stack>
+            </Stack>
+          ) : null}
+
+          {error ? <Alert severity="error">错误：{error}</Alert> : null}
+
+          <Paper
+            variant="outlined"
+            sx={{
+              p: 1.5,
+              bgcolor: "rgba(255,255,255,0.6)",
+              minHeight: 120,
+              maxHeight: 260,
+              overflow: "auto",
+              fontFamily: monoFontFamily,
+              fontSize: 12,
+              lineHeight: 1.6,
+            }}
+          >
+            {logs.length === 0 ? (
+              <Box sx={{ opacity: 0.6 }}>日志会显示在这里</Box>
+            ) : (
+              logs.map((l, idx) => (
+                <Box key={`${l.ts}-${idx}`}>
+                  <Box component="span" sx={{ opacity: 0.6 }}>
+                    [{fmtTime(l.ts)}]
+                  </Box>{" "}
+                  {l.message}
+                </Box>
+              ))
+            )}
+            <div ref={tailRef} />
+          </Paper>
+
+          {thumbnailsUrl ? (
+            <Stack spacing={1}>
+              <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                预览（缩略图网格）
+              </Typography>
+              <Box
+                component="img"
+                src={thumbnailsUrl}
+                alt="thumbnails"
+                sx={{
+                  width: "100%",
+                  height: "auto",
+                  borderRadius: 2,
+                  border: "1px solid",
+                  borderColor: "divider",
+                }}
+              />
+            </Stack>
+          ) : null}
+        </Stack>
+      </Stack>
+    </Box>
   );
 }
