@@ -47,11 +47,101 @@ export type PptJob = {
 const jobs = new Map<string, PptJob>();
 const emitters = new Map<string, EventEmitter>();
 
+type PersistState = {
+  writing: boolean;
+  pending: PptJob | null;
+};
+
+const persistStates = new Map<string, PersistState>();
+
+function extractFirstJsonValue(s: string): string | null {
+  // Some runs may leave trailing garbage in job.json (eg. partial writes or accidental
+  // concatenation). We try to recover by extracting the first complete top-level JSON value.
+  let start = 0;
+  while (start < s.length && /\s/.test(s[start]!)) start++;
+
+  const first = s[start];
+  if (first !== "{" && first !== "[") return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i]!;
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth++;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) {
+        return s.slice(start, i + 1);
+      }
+      if (depth < 0) return null;
+    }
+  }
+
+  return null;
+}
+
+async function writeFileAtomic(destPath: string, content: string) {
+  const dir = path.dirname(destPath);
+  const tmpPath = `${destPath}.tmp.${process.pid}.${Date.now()}.${Math.random()
+    .toString(16)
+    .slice(2)}`;
+
+  await fs.promises.mkdir(dir, { recursive: true });
+  await fs.promises.writeFile(tmpPath, content, { encoding: "utf-8" });
+
+  try {
+    await fs.promises.rename(tmpPath, destPath);
+  } catch {
+    // Windows may fail to rename over an existing file; fall back to replace.
+    try {
+      await fs.promises.rm(destPath, { force: true });
+      await fs.promises.rename(tmpPath, destPath);
+    } catch {
+      try {
+        await fs.promises.rm(tmpPath, { force: true });
+      } catch {
+        // ignore
+      }
+      throw new Error("atomic write failed");
+    }
+  }
+}
+
 function safeJsonParse<T>(s: string): T | null {
   try {
     return JSON.parse(s) as T;
   } catch {
-    return null;
+    const first = extractFirstJsonValue(s);
+    if (!first) return null;
+    try {
+      return JSON.parse(first) as T;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -186,8 +276,6 @@ function tryRehydrateJob(jobId: string): PptJob | null {
 
 function persistJob(job: PptJob) {
   if (!isSafeId(job.id)) return;
-  const absDir = absJobDir(job.id);
-  const absState = absJobStatePath(job.id);
 
   const data: PptJob = {
     ...job,
@@ -195,13 +283,40 @@ function persistJob(job: PptJob) {
     logs: job.logs.slice(-300),
   };
 
+  let st = persistStates.get(job.id);
+  if (!st) {
+    st = { writing: false, pending: null };
+    persistStates.set(job.id, st);
+  }
+
+  // Coalesce bursts: keep only the latest snapshot.
+  st.pending = data;
+
+  if (st.writing) return;
+  st.writing = true;
+
+  const jobId = job.id;
   queueMicrotask(() => {
     void (async () => {
       try {
-        await fs.promises.mkdir(absDir, { recursive: true });
-        await fs.promises.writeFile(absState, JSON.stringify(data, null, 2), "utf-8");
-      } catch {
-        // ignore
+        const absState = absJobStatePath(jobId);
+        const state = persistStates.get(jobId);
+        if (!state) return;
+
+        while (state.pending) {
+          const next = state.pending;
+          state.pending = null;
+
+          try {
+            const json = JSON.stringify(next, null, 2) + "\n";
+            await writeFileAtomic(absState, json);
+          } catch {
+            // ignore
+          }
+        }
+      } finally {
+        const state = persistStates.get(jobId);
+        if (state) state.writing = false;
       }
     })();
   });

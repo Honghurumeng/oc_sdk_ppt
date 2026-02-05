@@ -8,6 +8,62 @@ import { runOutlineJob } from "@/lib/runJob";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function extractFirstJsonValue(s: string): string | null {
+  let start = 0;
+  while (start < s.length && /\s/.test(s[start]!)) start++;
+
+  const first = s[start];
+  if (first !== "{" && first !== "[") return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i]!;
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth++;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+      if (depth < 0) return null;
+    }
+  }
+  return null;
+}
+
+function safeJsonParse(s: string): unknown | null {
+  try {
+    return JSON.parse(s) as unknown;
+  } catch {
+    const first = extractFirstJsonValue(s);
+    if (!first) return null;
+    try {
+      return JSON.parse(first) as unknown;
+    } catch {
+      return null;
+    }
+  }
+}
+
 function isSafeId(id: string) {
   return /^[a-z0-9]+$/i.test(id);
 }
@@ -72,12 +128,7 @@ export async function GET() {
       continue;
     }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch {
-      continue;
-    }
+    const parsed = safeJsonParse(raw);
     if (!parsed || typeof parsed !== "object") continue;
     const obj = parsed as Record<string, unknown>;
     if (obj.id !== id) continue;
