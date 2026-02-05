@@ -591,19 +591,23 @@ export default function PptJobForm() {
     const BASE_W = 960;
     const BASE_H = 540;
 
-    const ro = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      const w = entry.contentRect.width;
-      const h = entry.contentRect.height;
+    const calc = () => {
+      // Use DOMRect (includes padding) to avoid ResizeObserver edge cases when
+      // the box height is driven by percentage padding.
+      const rect = el.getBoundingClientRect();
+      const w = rect.width;
+      const h = rect.height;
       const s = Math.min(w / BASE_W, h / BASE_H);
       if (!Number.isFinite(s) || s <= 0) return;
       setPreviewScale(s);
-    });
+    };
 
+    calc();
+
+    const ro = new ResizeObserver(() => calc());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [showHtmlPreview]);
+  }, [showHtmlPreview, slides.length, htmlRev]);
 
   return (
     <Box>

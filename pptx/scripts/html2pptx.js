@@ -157,6 +157,8 @@ async function addBackground(slideData, targetSlide, tmpDir) {
 
 // Helper: Add elements to slide
 function addElements(slideData, targetSlide, pres) {
+  const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
+
   for (const el of slideData.elements) {
     if (el.type === 'image') {
       let imagePath = el.src.startsWith('file://') ? el.src.replace('file://', '') : el.src;
@@ -202,19 +204,28 @@ function addElements(slideData, targetSlide, pres) {
         fontSize: el.style.fontSize,
         fontFace: el.style.fontFace,
         color: el.style.color,
-        align: el.style.align,
         valign: 'top',
-        lineSpacing: el.style.lineSpacing,
-        paraSpaceBefore: el.style.paraSpaceBefore,
-        paraSpaceAfter: el.style.paraSpaceAfter,
-        margin: el.style.margin
       };
-      if (el.style.margin) listOptions.margin = el.style.margin;
+
+      if (typeof el.style.align === 'string' && el.style.align) listOptions.align = el.style.align;
+      if (isFiniteNumber(el.style.lineSpacing)) listOptions.lineSpacing = el.style.lineSpacing;
+      if (isFiniteNumber(el.style.paraSpaceBefore) && el.style.paraSpaceBefore > 0) listOptions.paraSpaceBefore = el.style.paraSpaceBefore;
+      if (isFiniteNumber(el.style.paraSpaceAfter) && el.style.paraSpaceAfter > 0) listOptions.paraSpaceAfter = el.style.paraSpaceAfter;
+      if (Array.isArray(el.style.margin)) listOptions.margin = el.style.margin;
+
       targetSlide.addText(el.items, listOptions);
     } else {
       // Check if text is single-line (height suggests one line)
-      const lineHeight = el.style.lineSpacing || el.style.fontSize * 1.2;
-      const isSingleLine = el.position.h <= lineHeight * 1.5;
+      // el.position.* are inches; style.* are points.
+      const lineHeightPt = isFiniteNumber(el.style.lineSpacing)
+        ? el.style.lineSpacing
+        : (isFiniteNumber(el.style.fontSize) ? el.style.fontSize * 1.2 : 0);
+      const boxHeightPt = isFiniteNumber(el.position.h) ? el.position.h * 72 : 0;
+      const isSingleLine =
+        isFiniteNumber(lineHeightPt) &&
+        lineHeightPt > 0 &&
+        isFiniteNumber(boxHeightPt) &&
+        boxHeightPt <= lineHeightPt * 1.5;
 
       let adjustedX = el.position.x;
       let adjustedW = el.position.w;
@@ -250,16 +261,17 @@ function addElements(slideData, targetSlide, pres) {
         italic: el.style.italic,
         underline: el.style.underline,
         valign: 'top',
-        lineSpacing: el.style.lineSpacing,
-        paraSpaceBefore: el.style.paraSpaceBefore,
-        paraSpaceAfter: el.style.paraSpaceAfter,
         inset: 0  // Remove default PowerPoint internal padding
       };
 
-      if (el.style.align) textOptions.align = el.style.align;
-      if (el.style.margin) textOptions.margin = el.style.margin;
+      if (typeof el.style.align === 'string' && el.style.align) textOptions.align = el.style.align;
+      if (Array.isArray(el.style.margin)) textOptions.margin = el.style.margin;
       if (el.style.rotate !== undefined) textOptions.rotate = el.style.rotate;
       if (el.style.transparency !== null && el.style.transparency !== undefined) textOptions.transparency = el.style.transparency;
+
+      if (isFiniteNumber(el.style.lineSpacing)) textOptions.lineSpacing = el.style.lineSpacing;
+      if (isFiniteNumber(el.style.paraSpaceBefore) && el.style.paraSpaceBefore > 0) textOptions.paraSpaceBefore = el.style.paraSpaceBefore;
+      if (isFiniteNumber(el.style.paraSpaceAfter) && el.style.paraSpaceAfter > 0) textOptions.paraSpaceAfter = el.style.paraSpaceAfter;
 
       targetSlide.addText(el.text, textOptions);
     }
@@ -769,39 +781,79 @@ async function extractSlideData(page) {
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) return;
 
-        // IMPORTANT: only take direct children (<ul><li>..</li></ul>)
-        // Using querySelectorAll('li') will flatten nested lists and cause
-        // duplicated / wrong-level bullets in PPTX.
-        const liElements = Array.from(el.children).filter((c) => c.tagName === 'LI');
+        // IMPORTANT:
+        // - A nested <ul> inside a <li> must NOT be converted as a separate text box,
+        //   otherwise the parent list collapses (because we remove nested text from
+        //   the parent item) and later items shift upward and overlap.
+        // - We flatten nested lists into a single list, using indentLevel to
+        //   preserve visual hierarchy.
+
+        const listComputed = window.getComputedStyle(el);
+        const baseBulletIndentPt = pxToPoints(listComputed.paddingLeft);
+
         const items = [];
-        const ulComputed = window.getComputedStyle(el);
-        const ulPaddingLeftPt = pxToPoints(ulComputed.paddingLeft);
+        const lastRuns = [];
 
-        // Split: margin-left for bullet position, indent for text position
-        // margin-left + indent = ul padding-left
-        const marginLeft = ulPaddingLeftPt * 0.5;
-        const textIndent = ulPaddingLeftPt * 0.5;
+        const calcLineSpacingPt = (computed) => {
+          const lhPx = parseFloat(computed.lineHeight);
+          if (!Number.isNaN(lhPx) && lhPx > 0) return lhPx * PT_PER_PX;
+          const fsPx = parseFloat(computed.fontSize);
+          if (!Number.isNaN(fsPx) && fsPx > 0) return fsPx * 1.2 * PT_PER_PX;
+          return null;
+        };
 
-        liElements.forEach((li, idx) => {
-          const isLast = idx === liElements.length - 1;
-          // Exclude nested lists from the parent list item's text.
-          const liClone = li.cloneNode(true);
-          liClone.querySelectorAll('ul, ol').forEach((n) => n.remove());
+        const addList = (listEl, depth) => {
+          const liEls = Array.from(listEl.children).filter((c) => c.tagName === 'LI');
+          liEls.forEach((li) => {
+            // Exclude nested lists from the current list item's displayed text.
+            const liClone = li.cloneNode(true);
+            liClone.querySelectorAll('ul, ol').forEach((n) => n.remove());
 
-          const runs = parseInlineFormatting(liClone, { breakLine: false });
-          // Clean manual bullets from first run
-          if (runs.length > 0) {
-            runs[0].text = runs[0].text.replace(/^[•\-\*▪▸○●◆◇■□]\s*/, '');
-            runs[0].options.bullet = { indent: textIndent };
-          }
-          // Set breakLine on last run
-          if (runs.length > 0 && !isLast) {
-            runs[runs.length - 1].options.breakLine = true;
-          }
-          items.push(...runs);
-        });
+            const liText = (liClone.textContent || '').trim();
+            const liComputed = window.getComputedStyle(li);
+            const fontFace = liComputed.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
+            const fontSizePt = pxToPoints(liComputed.fontSize);
+            const color = rgbToHex(liComputed.color);
+            const transparency = extractAlpha(liComputed.color);
+            const lineSpacingPt = calcLineSpacingPt(liComputed);
+            const paraAfterPt = pxToPoints(liComputed.marginBottom);
 
-        const computed = window.getComputedStyle(liElements[0] || el);
+            if (liText) {
+              const baseRunOpts = {
+                breakLine: false,
+                fontFace,
+                fontSize: fontSizePt,
+                color,
+                ...(transparency !== null ? { transparency } : {}),
+              };
+
+              const runs = parseInlineFormatting(liClone, baseRunOpts);
+              if (runs.length > 0) {
+                runs[0].text = runs[0].text.replace(/^[•\-\*▪▸○●◆◇■□]\s*/, '');
+                runs[0].options.bullet = { indent: baseBulletIndentPt };
+                if (depth > 0) runs[0].options.indentLevel = depth;
+                if (lineSpacingPt !== null) runs[0].options.lineSpacing = lineSpacingPt;
+                if (paraAfterPt > 0) runs[0].options.paraSpaceAfter = paraAfterPt;
+                runs[runs.length - 1].options.breakLine = true;
+                lastRuns.push(runs[runs.length - 1]);
+                items.push(...runs);
+              }
+            }
+
+            // Then add nested lists (one level deeper)
+            Array.from(li.children)
+              .filter((c) => c.tagName === 'UL' || c.tagName === 'OL')
+              .forEach((nested) => addList(nested, depth + 1));
+          });
+        };
+
+        addList(el, 0);
+
+        if (lastRuns.length > 0) {
+          delete lastRuns[lastRuns.length - 1].options.breakLine;
+        }
+
+        const computed = window.getComputedStyle(el);
 
         elements.push({
           type: 'list',
@@ -818,15 +870,14 @@ async function extractSlideData(page) {
             color: rgbToHex(computed.color),
             transparency: extractAlpha(computed.color),
             align: computed.textAlign === 'start' ? 'left' : computed.textAlign,
-            lineSpacing: computed.lineHeight && computed.lineHeight !== 'normal' ? pxToPoints(computed.lineHeight) : null,
-            paraSpaceBefore: 0,
-            paraSpaceAfter: pxToPoints(computed.marginBottom),
             // PptxGenJS margin array is [left, right, bottom, top]
-            margin: [marginLeft, 0, 0, 0]
+            margin: [0, 0, 0, 0]
           }
         });
 
-        liElements.forEach(li => processed.add(li));
+        // Mark this list and its descendants as processed to avoid duplicate
+        // extraction (especially for nested lists).
+        el.querySelectorAll('ul, ol, li').forEach((n) => processed.add(n));
         processed.add(el);
         return;
       }
@@ -851,14 +902,26 @@ async function extractSlideData(page) {
       const rotation = getRotation(computed.transform, computed.writingMode);
       const { x, y, w, h } = getPositionAndSize(el, rect, rotation);
 
+      const fontSizePt = pxToPoints(computed.fontSize);
+
+      // getComputedStyle(lineHeight) can be "normal"; PowerPoint needs a numeric lineSpacing.
+      const lineSpacingPt = (() => {
+        const lhPx = parseFloat(computed.lineHeight);
+        if (!Number.isNaN(lhPx) && lhPx > 0) return lhPx * PT_PER_PX;
+
+        // Fallback: approximate "normal" (usually ~1.2x font-size).
+        const fsPx = parseFloat(computed.fontSize);
+        if (!Number.isNaN(fsPx) && fsPx > 0) return fsPx * 1.2 * PT_PER_PX;
+        return null;
+      })();
+
+      // IMPORTANT: Do NOT map CSS margins to paraSpaceBefore/After.
+      // Margins are already baked into element position via getBoundingClientRect().
       const baseStyle = {
-        fontSize: pxToPoints(computed.fontSize),
+        fontSize: fontSizePt,
         fontFace: computed.fontFamily.split(',')[0].replace(/['"]/g, '').trim(),
         color: rgbToHex(computed.color),
         align: computed.textAlign === 'start' ? 'left' : computed.textAlign,
-        lineSpacing: pxToPoints(computed.lineHeight),
-        paraSpaceBefore: pxToPoints(computed.marginTop),
-        paraSpaceAfter: pxToPoints(computed.marginBottom),
         // PptxGenJS margin array is [left, right, bottom, top] (not [top, right, bottom, left] as documented)
         margin: [
           pxToPoints(computed.paddingLeft),
@@ -867,6 +930,8 @@ async function extractSlideData(page) {
           pxToPoints(computed.paddingTop)
         ]
       };
+
+      if (lineSpacingPt !== null) baseStyle.lineSpacing = lineSpacingPt;
 
       const transparency = extractAlpha(computed.color);
       if (transparency !== null) baseStyle.transparency = transparency;
@@ -882,7 +947,13 @@ async function extractSlideData(page) {
 
         // Adjust lineSpacing based on largest fontSize in runs
         const adjustedStyle = { ...baseStyle };
-        if (adjustedStyle.lineSpacing) {
+        if (
+          typeof adjustedStyle.lineSpacing === 'number' &&
+          Number.isFinite(adjustedStyle.lineSpacing) &&
+          typeof adjustedStyle.fontSize === 'number' &&
+          Number.isFinite(adjustedStyle.fontSize) &&
+          adjustedStyle.fontSize > 0
+        ) {
           const maxFontSize = Math.max(
             adjustedStyle.fontSize,
             ...runs.map(r => r.options?.fontSize || 0)
