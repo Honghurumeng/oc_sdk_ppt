@@ -24,6 +24,48 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+input,
+button {
+  font: inherit;
+}
+
+select {
+  font: inherit;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+input {
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 10px;
+  padding: 10px 12px;
+  outline: none;
+}
+
+textarea {
+  font: inherit;
+}
+
+input:focus {
+  border-color: rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 3px rgba(230, 167, 86, 0.22);
+}
+
+button {
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: rgba(17, 17, 15, 0.92);
+  color: #fff;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 * {
   box-sizing: border-box;
   padding: 0;
