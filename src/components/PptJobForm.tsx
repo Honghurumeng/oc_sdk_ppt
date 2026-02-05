@@ -6,6 +6,7 @@ import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Checkbox from "@mui/material/Checkbox";
+import CircularProgress from "@mui/material/CircularProgress";
 import Divider from "@mui/material/Divider";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import FormControl from "@mui/material/FormControl";
@@ -19,8 +20,21 @@ import Typography from "@mui/material/Typography";
 
 type JobStatus = "queued" | "running" | "awaiting_approval" | "done" | "error";
 
+type PptJobInput = {
+  topic: string;
+  language?: string;
+  slideCount?: number;
+  audience?: string;
+  tone?: string;
+  referenceContent?: string;
+  stylePreset?: string;
+  palette?: string;
+  model?: string;
+};
+
 type JobResponse = {
   id: string;
+  input: PptJobInput;
   status: JobStatus;
   sessionId: string | null;
   error: string | null;
@@ -28,6 +42,20 @@ type JobResponse = {
   outlineMarkdown?: string | null;
   pptxUrl: string | null;
   thumbnailsUrl?: string | null;
+};
+
+type JobSummary = {
+  id: string;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+  topic: string;
+  slideCount: number | null;
+  hasOutline: boolean;
+  hasSlides: boolean;
+  slidesCount: number;
+  hasPptx: boolean;
+  error: string | null;
 };
 
 type SlideVersion = {
@@ -47,6 +75,12 @@ function fmtTime(ts: number) {
   return d.toLocaleTimeString();
 }
 
+function fmtDateTime(ts: number) {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  return d.toLocaleString();
+}
+
 const monoFontFamily =
   "var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
 
@@ -62,6 +96,13 @@ export default function PptJobForm() {
   const [model, setModel] = useState<string>("");
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
+
+  const [recentJobs, setRecentJobs] = useState<JobSummary[]>([]);
+  const [recentJobsLoading, setRecentJobsLoading] = useState(false);
+  const [recentJobsError, setRecentJobsError] = useState<string | null>(null);
+  const [recentPick, setRecentPick] = useState<string>("");
+  const [resumeJobId, setResumeJobId] = useState<string>("");
+  const [isResuming, setIsResuming] = useState(false);
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<JobStatus | null>(null);
@@ -116,93 +157,46 @@ export default function PptJobForm() {
     }
   }
 
-  async function refreshJob(id: string) {
-    const res = await fetch(`/api/ppt/jobs/${id}`, { cache: "no-store" });
-    if (!res.ok) {
-      let msg = "查询任务状态失败";
-      if (res.status === 404) {
-        msg = `任务不存在或服务已重启（jobId=${id}）。如果已生成产物，请检查 workspace/jobs/${id}/`; 
-      } else {
-        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-        if (typeof data.error === "string" && data.error.trim()) msg = data.error;
+  async function loadRecentJobs() {
+    setRecentJobsLoading(true);
+    setRecentJobsError(null);
+    try {
+      const res = await fetch("/api/ppt/jobs", { cache: "no-store" });
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok || data.ok !== true) {
+        throw new Error((data.error as string) ?? "加载 workspace 任务列表失败");
       }
-      setError(msg);
-      setStatus("error");
-      return;
-    }
-
-    const data = (await res.json()) as JobResponse;
-    setStatus(data.status);
-    setSessionId(data.sessionId);
-    setError(data.error);
-    const nextLogs = data.logs ?? [];
-    setLogs(nextLogs);
-    seenLogRef.current = new Set(nextLogs.map((l) => `${l.ts}|${l.message}`));
-    if (typeof data.outlineMarkdown === "string") setOutlineMarkdown(data.outlineMarkdown);
-    setPptxUrl(data.pptxUrl);
-
-    if (data.status !== "queued" && data.status !== "running") {
-      if (pollRef.current) {
-        window.clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
+      const list = Array.isArray(data.jobs) ? (data.jobs as unknown[]) : [];
+      const parsed: JobSummary[] = list
+        .map((x) => (typeof x === "object" && x !== null ? (x as Record<string, unknown>) : null))
+        .filter((x): x is Record<string, unknown> => Boolean(x))
+        .map((x) => ({
+          id: typeof x.id === "string" ? x.id : "",
+          status: typeof x.status === "string" ? x.status : "unknown",
+          createdAt: typeof x.createdAt === "number" ? x.createdAt : 0,
+          updatedAt: typeof x.updatedAt === "number" ? x.updatedAt : 0,
+          topic: typeof x.topic === "string" ? x.topic : "",
+          slideCount: typeof x.slideCount === "number" ? x.slideCount : null,
+          hasOutline: Boolean(x.hasOutline),
+          hasSlides: Boolean(x.hasSlides),
+          slidesCount: typeof x.slidesCount === "number" ? x.slidesCount : 0,
+          hasPptx: Boolean(x.hasPptx),
+          error: typeof x.error === "string" ? x.error : null,
+        }))
+        .filter((j) => j.id);
+      setRecentJobs(parsed);
+    } catch (e) {
+      setRecentJobs([]);
+      setRecentJobsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRecentJobsLoading(false);
     }
   }
 
-  function startPolling(id: string) {
-    if (pollRef.current) return;
-    pollRef.current = window.setInterval(() => {
-      void refreshJob(id);
-    }, 1500);
-  }
-
-  function stopPolling() {
-    if (!pollRef.current) return;
-    window.clearInterval(pollRef.current);
-    pollRef.current = null;
-  }
-
-  async function start() {
-    setError(null);
-    setLogs([]);
-    setOutlineMarkdown("");
-    setPptxUrl(null);
-    seenLogRef.current = new Set();
-
-    const res = await fetch("/api/ppt/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        topic,
-        language,
-        slideCount,
-        audience,
-        tone,
-        referenceContent: referenceContent.trim() || undefined,
-        stylePreset,
-        palette,
-        model: model || undefined,
-      }),
-    });
-
-    const data = await res.json();
-    if (!res.ok) {
-      setError(data?.error ?? "创建任务失败");
-      return;
-    }
-
-    const id = String(data.jobId);
-    setJobId(id);
-    setStatus("queued");
-
-    // 先连 SSE，再 refresh，避免“日志重放 + refresh”造成重复
+  function attachJobStream(id: string) {
     esRef.current?.close();
     const es = new EventSource(`/api/ppt/jobs/${id}/events`);
     esRef.current = es;
-
-    startPolling(id);
-
-    await refreshJob(id);
 
     es.addEventListener("log", (ev) => {
       try {
@@ -211,7 +205,6 @@ export default function PptJobForm() {
         if (seenLogRef.current.has(key)) return;
         seenLogRef.current.add(key);
         if (seenLogRef.current.size > 1200) {
-          // 防止长时间运行导致内存增长
           const next = new Set(Array.from(seenLogRef.current).slice(-900));
           seenLogRef.current = next;
         }
@@ -244,15 +237,174 @@ export default function PptJobForm() {
       }
     });
 
-    const finish = async () => {
-      await refreshJob(id);
-      es.close();
-      stopPolling();
-    };
-
-    es.addEventListener("result", () => void finish());
-    es.addEventListener("error", () => void finish());
     es.addEventListener("flush", () => void refreshJob(id));
+
+    es.addEventListener("result", () => {
+      void refreshJob(id);
+    });
+
+    es.addEventListener("error", (ev) => {
+      // Avoid closing stream on transient network errors.
+      const maybeData = (ev as unknown as { data?: unknown }).data;
+      if (typeof maybeData === "string" && maybeData.trim()) {
+        void refreshJob(id);
+      }
+    });
+
+    return es;
+  }
+
+  async function refreshJob(id: string, opts?: { hydrateInput?: boolean }) {
+    const res = await fetch(`/api/ppt/jobs/${id}`, { cache: "no-store" });
+    if (!res.ok) {
+      let msg = "查询任务状态失败";
+      if (res.status === 404) {
+        msg = `任务不存在或服务已重启（jobId=${id}）。如果已生成产物，请检查 workspace/jobs/${id}/`; 
+      } else {
+        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        if (typeof data.error === "string" && data.error.trim()) msg = data.error;
+      }
+      setError(msg);
+      setStatus("error");
+      return;
+    }
+
+    const data = (await res.json()) as JobResponse;
+
+    if (opts?.hydrateInput && data.input) {
+      setTopic(typeof data.input.topic === "string" ? data.input.topic : "");
+      setLanguage(typeof data.input.language === "string" ? data.input.language : "中文");
+      setSlideCount(
+        typeof data.input.slideCount === "number" && Number.isFinite(data.input.slideCount)
+          ? data.input.slideCount
+          : 8
+      );
+      setAudience(typeof data.input.audience === "string" ? data.input.audience : "一般受众");
+      setTone(
+        typeof data.input.tone === "string" ? data.input.tone : "专业、清晰、偏实用"
+      );
+      setReferenceContent(
+        typeof data.input.referenceContent === "string" ? data.input.referenceContent : ""
+      );
+      setStylePreset(
+        typeof data.input.stylePreset === "string" ? data.input.stylePreset : "Editorial"
+      );
+      setPalette(
+        typeof data.input.palette === "string" ? data.input.palette : "Sand & Ink"
+      );
+      if (typeof data.input.model === "string") {
+        setModel(data.input.model);
+      }
+    }
+
+    setStatus(data.status);
+    setSessionId(data.sessionId);
+    setError(data.error);
+    const nextLogs = data.logs ?? [];
+    setLogs(nextLogs);
+    seenLogRef.current = new Set(nextLogs.map((l) => `${l.ts}|${l.message}`));
+    if (typeof data.outlineMarkdown === "string") setOutlineMarkdown(data.outlineMarkdown);
+    setPptxUrl(data.pptxUrl);
+
+    if (data.status === "queued" || data.status === "running") {
+      startPolling(id);
+    } else {
+      stopPolling();
+    }
+  }
+
+  function startPolling(id: string) {
+    if (pollRef.current) return;
+    pollRef.current = window.setInterval(() => {
+      void refreshJob(id);
+    }, 1500);
+  }
+
+  function stopPolling() {
+    if (!pollRef.current) return;
+    window.clearInterval(pollRef.current);
+    pollRef.current = null;
+  }
+
+  async function resumeJob(idRaw: string) {
+    const id = idRaw.trim();
+    if (!id) return;
+
+    setIsResuming(true);
+    setError(null);
+    setSlides([]);
+    setSlidesError(null);
+    setShowHtmlPreview(false);
+    setPendingSlidesReload(false);
+    setAdjustFeedback("");
+    setAdjustTarget("all");
+    setHtmlRev((v) => v + 1);
+
+    setJobId(id);
+    setStatus(null);
+    setSessionId(null);
+    setPptxUrl(null);
+    setLogs([]);
+    setOutlineMarkdown("");
+    seenLogRef.current = new Set();
+
+    stopPolling();
+    esRef.current?.close();
+
+    try {
+      await refreshJob(id, { hydrateInput: true });
+      attachJobStream(id);
+
+      const list = await loadSlides(id);
+      if (list.length > 0) {
+        setShowHtmlPreview(true);
+      }
+    } finally {
+      setIsResuming(false);
+    }
+  }
+
+  async function start() {
+    setError(null);
+    setLogs([]);
+    setOutlineMarkdown("");
+    setPptxUrl(null);
+    seenLogRef.current = new Set();
+    setShowHtmlPreview(false);
+    setSlides([]);
+    setSlidesError(null);
+    setPendingSlidesReload(false);
+
+    const res = await fetch("/api/ppt/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        topic,
+        language,
+        slideCount,
+        audience,
+        tone,
+        referenceContent: referenceContent.trim() || undefined,
+        stylePreset,
+        palette,
+        model: model || undefined,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      setError(data?.error ?? "创建任务失败");
+      return;
+    }
+
+    const id = String(data.jobId);
+    setJobId(id);
+    setStatus("queued");
+
+    stopPolling();
+    esRef.current?.close();
+    await refreshJob(id);
+    attachJobStream(id);
   }
 
   async function approve() {
@@ -283,35 +435,44 @@ export default function PptJobForm() {
     await refreshJob(jobId);
   }
 
-  async function loadSlides() {
-    if (!jobId) return;
+  async function loadSlides(forJobId?: string): Promise<SlideInfo[]> {
+    const id = (forJobId ?? jobId)?.trim();
+    if (!id) return [];
     setSlidesError(null);
-    const res = await fetch(`/api/ppt/jobs/${jobId}/slides`, { cache: "no-store" });
+    const res = await fetch(`/api/ppt/jobs/${id}/slides`, { cache: "no-store" });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok || data.ok !== true) {
       setSlides([]);
       setSlidesError((data.error as string) ?? "加载 slides 失败");
-      return;
+      return [];
     }
-    const list = Array.isArray(data.slides) ? data.slides : [];
+    const list = Array.isArray(data.slides) ? (data.slides as unknown[]) : [];
     const parsed: SlideInfo[] = list
-      .map((x) => (typeof x === "object" && x !== null ? (x as any) : null))
-      .filter(Boolean)
-      .map((x) => ({
-        name: typeof x.name === "string" ? x.name : "",
-        activeVersion: typeof x.activeVersion === "string" ? x.activeVersion : null,
-        versions: Array.isArray(x.versions)
-          ? x.versions
-              .filter((v: any) => v && typeof v.id === "string")
-              .map((v: any) => ({
-                id: String(v.id),
-                createdAt: typeof v.createdAt === "number" ? v.createdAt : 0,
-                note: typeof v.note === "string" ? v.note : undefined,
-              }))
-          : [],
-      }))
-      .filter((s) => s.name && s.name.toLowerCase().endsWith(".html"));
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const obj = item as Record<string, unknown>;
+        const name = typeof obj.name === "string" ? obj.name : "";
+        const activeVersion = typeof obj.activeVersion === "string" ? obj.activeVersion : null;
+        const versionsRaw = Array.isArray(obj.versions) ? (obj.versions as unknown[]) : [];
+        const versions: SlideVersion[] = versionsRaw
+          .map((v): SlideVersion | null => {
+            if (!v || typeof v !== "object") return null;
+            const vv = v as Record<string, unknown>;
+            if (typeof vv.id !== "string") return null;
+            const out: SlideVersion = {
+              id: String(vv.id),
+              createdAt: typeof vv.createdAt === "number" ? vv.createdAt : 0,
+              ...(typeof vv.note === "string" ? { note: vv.note } : {}),
+            };
+            return out;
+          })
+          .filter((v): v is SlideVersion => v !== null);
+        const out: SlideInfo = { name, activeVersion, versions };
+        return out;
+      })
+      .filter((s): s is SlideInfo => s !== null && s.name.toLowerCase().endsWith(".html"));
     setSlides(parsed);
+    return parsed;
   }
 
   async function activateVersion(slideName: string, versionId: string) {
@@ -378,6 +539,7 @@ export default function PptJobForm() {
 
   useEffect(() => {
     void loadModelOptions();
+    void loadRecentJobs();
 
     const onModelsChanged = () => {
       void loadModelOptions();
@@ -446,6 +608,108 @@ export default function PptJobForm() {
   return (
     <Box>
       <Stack spacing={2}>
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 1.5,
+            bgcolor: "rgba(251, 247, 239, 0.55)",
+            borderStyle: "dashed",
+          }}
+        >
+          <Stack spacing={1.25}>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1}
+              alignItems={{ sm: "center" }}
+              justifyContent="space-between"
+            >
+              <Box>
+                <Typography variant="subtitle2" sx={{ fontWeight: 900, letterSpacing: -0.2 }}>
+                  继续之前的任务
+                </Typography>
+                <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                  从 <code>workspace/jobs/&lt;jobId&gt;/job.json</code> 恢复输入/日志/大纲；若已有 HTML
+                  slides，会自动加载到下方预览。
+                </Typography>
+              </Box>
+
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ ml: { sm: "auto" } }}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => void loadRecentJobs()}
+                  disabled={recentJobsLoading}
+                >
+                  刷新列表
+                </Button>
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={() => void resumeJob(resumeJobId || recentPick)}
+                  disabled={isResuming || (!resumeJobId.trim() && !recentPick.trim())}
+                >
+                  {isResuming ? (
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <CircularProgress size={14} />
+                      <span>加载中</span>
+                    </Stack>
+                  ) : (
+                    "加载任务"
+                  )}
+                </Button>
+              </Stack>
+            </Stack>
+
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25} alignItems={{ sm: "center" }}>
+              <FormControl size="small" sx={{ minWidth: 280 }} disabled={recentJobs.length === 0}>
+                <InputLabel id="recent-job-select">从 workspace 选择</InputLabel>
+                <Select
+                  labelId="recent-job-select"
+                  label="从 workspace 选择"
+                  value={recentPick}
+                  onChange={(e) => {
+                    const id = String(e.target.value);
+                    setRecentPick(id);
+                    setResumeJobId(id);
+                  }}
+                >
+                  {recentJobs.length === 0 ? (
+                    <MenuItem value="">(暂无 job.json 项目)</MenuItem>
+                  ) : (
+                    recentJobs.map((j) => {
+                      const when = j.updatedAt || j.createdAt;
+                      const label =
+                        (j.topic ? j.topic.slice(0, 40) : "(无标题)") +
+                        ` · ${j.status}` +
+                        (j.slidesCount ? ` · HTML:${j.slidesCount}` : "") +
+                        (j.hasPptx ? " · PPTX" : "") +
+                        (when ? ` · ${fmtDateTime(when)}` : "");
+                      return (
+                        <MenuItem key={j.id} value={j.id}>
+                          {label}
+                        </MenuItem>
+                      );
+                    })
+                  )}
+                </Select>
+              </FormControl>
+
+              <TextField
+                size="small"
+                label="或手动输入 jobId"
+                value={resumeJobId}
+                onChange={(e) => setResumeJobId(e.target.value)}
+                placeholder="例如：12602b57..."
+                fullWidth
+              />
+            </Stack>
+
+            {recentJobsError ? <Alert severity="warning">{recentJobsError}</Alert> : null}
+          </Stack>
+        </Paper>
+
+        <Divider />
+
         <Box>
           <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: -0.2 }}>
             生成任务
@@ -699,7 +963,7 @@ export default function PptJobForm() {
                   HTML 预览
                 </Typography>
                 <Stack direction="row" spacing={1} sx={{ ml: { sm: "auto" } }}>
-                  <Button size="small" variant="outlined" onClick={loadSlides}>
+                  <Button size="small" variant="outlined" onClick={() => void loadSlides()}>
                     刷新 slides
                   </Button>
                 </Stack>

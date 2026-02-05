@@ -25,6 +25,7 @@ export async function GET(
   const base = `/api/ppt/jobs/${jobId}`;
   return NextResponse.json({
     id: job.id,
+    input: job.input,
     status: job.status,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,

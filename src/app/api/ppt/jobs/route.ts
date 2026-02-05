@@ -1,13 +1,128 @@
 import { NextResponse } from "next/server";
 import crypto from "node:crypto";
+import path from "node:path";
+import { promises as fs } from "node:fs";
 import { createJob, type PptJobInput } from "@/lib/jobStore";
 import { runOutlineJob } from "@/lib/runJob";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function isSafeId(id: string) {
+  return /^[a-z0-9]+$/i.test(id);
+}
+
+async function fileExists(p: string) {
+  try {
+    const st = await fs.stat(p);
+    return st.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function countHtmlFiles(dir: string) {
+  try {
+    const files = await fs.readdir(dir);
+    return files.filter((f) => f.toLowerCase().endsWith(".html")).length;
+  } catch {
+    return 0;
+  }
+}
+
 function makeJobId() {
   return crypto.randomUUID().replace(/-/g, "");
+}
+
+export async function GET() {
+  const baseDir = path.join(process.cwd(), "workspace", "jobs");
+  let entries: import("node:fs").Dirent[] = [];
+  try {
+    entries = await fs.readdir(baseDir, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+
+  const summaries: Array<{
+    id: string;
+    status: string;
+    createdAt: number;
+    updatedAt: number;
+    topic: string;
+    slideCount: number | null;
+    hasOutline: boolean;
+    hasSlides: boolean;
+    slidesCount: number;
+    hasPptx: boolean;
+    error: string | null;
+  }> = [];
+
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    const id = ent.name;
+    if (!isSafeId(id)) continue;
+
+    const absJobJson = path.join(baseDir, id, "job.json");
+    if (!(await fileExists(absJobJson))) continue;
+
+    let raw = "";
+    try {
+      raw = await fs.readFile(absJobJson, "utf-8");
+    } catch {
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const obj = parsed as Record<string, unknown>;
+    if (obj.id !== id) continue;
+
+    const input =
+      obj.input && typeof obj.input === "object"
+        ? (obj.input as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+    const topic = typeof input.topic === "string" ? input.topic : "";
+    const slideCountRaw = input.slideCount;
+    const slideCount =
+      typeof slideCountRaw === "number" && Number.isFinite(slideCountRaw) ? slideCountRaw : null;
+
+    const outputDir = path.join(baseDir, id);
+    const outlineAbs = path.join(outputDir, "outline.md");
+    const slidesAbs = path.join(outputDir, "slides");
+    const pptxAbs = path.join(outputDir, "deck.pptx");
+
+    const hasOutline = await fileExists(outlineAbs);
+    const slidesCount = await countHtmlFiles(slidesAbs);
+    const hasSlides = slidesCount > 0;
+    const hasPptx = await fileExists(pptxAbs);
+
+    summaries.push({
+      id,
+      status: typeof obj.status === "string" ? obj.status : "unknown",
+      createdAt: typeof obj.createdAt === "number" ? obj.createdAt : 0,
+      updatedAt: typeof obj.updatedAt === "number" ? obj.updatedAt : 0,
+      topic,
+      slideCount,
+      hasOutline,
+      hasSlides,
+      slidesCount,
+      hasPptx,
+      error: typeof obj.error === "string" ? obj.error : null,
+    });
+  }
+
+  summaries.sort((a, b) => {
+    const da = a.updatedAt || a.createdAt;
+    const db = b.updatedAt || b.createdAt;
+    return db - da;
+  });
+
+  return NextResponse.json({ ok: true, jobs: summaries });
 }
 
 export async function POST(req: Request) {
