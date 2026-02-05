@@ -6,9 +6,9 @@
     node web/scripts/build_deck.cjs <absSlidesDir> <absPptxPath> --tmpDir <tmpDir> --title <title>
 
   Notes:
-  - Uses ../pptx/scripts/html2pptx.js for HTML -> slide conversion.
+  - Uses ./pptx/scripts/html2pptx.js for HTML -> slide conversion.
   - Expects each HTML to set body size to 720pt x 405pt (10" x 5.625").
-*/
+ */
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -55,7 +55,7 @@ async function main() {
   const outPath = path.resolve(absPptxPath);
   const tmpDir = args.tmpDir ? path.resolve(args.tmpDir) : process.env.TMPDIR || "/tmp";
 
-  const html2pptxPath = path.join(__dirname, "..", "..", "pptx", "scripts", "html2pptx.js");
+  const html2pptxPath = path.join(__dirname, "..", "pptx", "scripts", "html2pptx.js");
   // eslint-disable-next-line import/no-dynamic-require
   const html2pptx = require(html2pptxPath);
 

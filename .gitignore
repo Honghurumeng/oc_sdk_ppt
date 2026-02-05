@@ -44,3 +44,7 @@ opencode.json.bak
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# python caches
+**/__pycache__/
+*.pyc
