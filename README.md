@@ -32,6 +32,7 @@ npm run build
 - `OPENCODE_BASE_URL=http://localhost:5937`
 
 或者让 Web 后端自动启动一个 opencode server（默认 hostname=127.0.0.1, port=5937）。
+如果端口被占用，后端会自动向上递增端口进行重试（例如 5937 -> 5938 -> 5939）。
 
 为了避免服务裸奔，内嵌 server 默认会设置密码：
 
@@ -45,6 +46,7 @@ Web 后端会用该密码以 HTTP Basic 的方式访问 opencode server：
 你可以通过环境变量覆盖端口/密码：
 
 - `OPENCODE_PORT=5937`
+- `OPENCODE_PORT_MAX_TRIES=20`（端口占用时最多重试次数）
 - `OPENCODE_SERVER_PASSWORD=oc-ppt-agent`
 
 指定模型（如果你想固定某个 provider/model）：

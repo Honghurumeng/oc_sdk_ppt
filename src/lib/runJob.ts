@@ -2,7 +2,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { getOpencodeHandle, unwrapData } from "@/lib/opencode";
+import { snapshotSlideVersions, ensureSlideVersionsInitialized, listHtmlSlides as listHtmlSlidesByJob } from "@/lib/slideVersions";
 import {
   getJob,
   pushEvent,
@@ -159,6 +161,47 @@ function buildDeckInstruction(jobId: string, input: PptJobInput) {
   ].join("\n");
 
   return { instruction, outDir, pptxPath, outlinePath };
+}
+
+function buildHtmlAdjustInstruction(
+  slidesDir: string,
+  target: "all" | string,
+  userFeedback: string
+) {
+  const feedback = sanitizeMultiline(userFeedback).slice(0, 6000).trim();
+  const scope = target === "all" ? "修改范围：所有 slides（*.html）" : `修改范围：仅 ${target}`;
+  return [
+    "你是一个 PPT HTML 调整助手。",
+    "目标：在不改变页面尺寸/工具链约束的前提下，按用户意见直接修改已有的 HTML slides 文件。",
+    "",
+    "必须修改的目录：",
+    `- slides 目录：${slidesDir}`,
+    scope,
+    "",
+    "强约束（必须全部满足）：",
+    "- body 固定 720pt x 405pt，不要改尺寸",
+    "- 所有可见文字必须放在 p/h1-h6/ul/ol 中（div 内不要裸文本）",
+    "- 不要在 h1-h6/p/li/ul/ol 上使用 border/background/box-shadow",
+    "- 任何文字距离底部 >= 0.5 英寸（约 36pt）",
+    "- 删除 Notes: 行（不要输出 notes）",
+    "",
+    "用户修改意见：",
+    "```text",
+    feedback || "(空)",
+    "```",
+    "",
+    "执行步骤（按顺序执行，全部成功后再回复 DONE）：",
+    "1) 读取并理解目标 HTML（必要时先全局扫描目录）",
+    "2) 逐页修改并保存（保持页面可读、内容不溢出）",
+    "3) 自检：确认不引入裸文本/禁用样式/尺寸变化",
+    "",
+    "最后只输出：DONE。",
+  ].join("\n");
+}
+
+async function hashFile(p: string) {
+  const buf = await fs.readFile(p);
+  return createHash("sha1").update(buf).digest("hex");
 }
 
 function buildHtmlFixInstruction(slidesDir: string, errors: string) {
@@ -431,6 +474,251 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
 
     setStatus2(jobId, "done");
     log(jobId, "PPTX 生成完成。");
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    setJob(jobId, { status: "error", error: message });
+    pushEvent(jobId, { type: "error", message, ts: now() });
+  }
+}
+
+export async function runHtmlOnlyJob(jobId: string, input: PptJobInput) {
+  const job = getJob(jobId);
+  if (!job) return;
+
+  setStatus2(jobId, "running");
+  log(jobId, "开始生成 HTML slides（预览模式）…");
+
+  try {
+    const slideCount = Math.max(3, Math.min(20, input.slideCount ?? 8));
+
+    const { client } = await getOpencodeHandle();
+
+    if (!job.sessionId) {
+      log(jobId, "sessionId 缺失，创建新的 opencode session…");
+      const session = unwrapData<{ id: string }>(
+        await client.session.create({
+          body: { title: `PPT HTML Preview: ${sanitizeOneLine(input.topic).slice(0, 60)}` },
+        })
+      );
+      if (!session?.id) {
+        throw new Error("创建 opencode session 失败：未返回 session.id（请检查服务鉴权/日志）");
+      }
+      setJob(jobId, { sessionId: session.id });
+      log(jobId, `sessionId=${session.id}`);
+    }
+
+    const sessionId = getJob(jobId)?.sessionId;
+    if (!sessionId) throw new Error("缺少 sessionId：无法继续生成 HTML");
+
+    const { instruction, pptxPath, outlinePath } = buildDeckInstruction(jobId, input);
+    const slidesDir = `${path.posix.dirname(pptxPath)}/slides`;
+
+    const absOutline = path.join(process.cwd(), outlinePath);
+    const outlineMarkdown = await readTextIfExists(absOutline);
+    if (!outlineMarkdown || outlineMarkdown.trim().length < 50) {
+      throw new Error("outline.md 不存在或内容过短");
+    }
+
+    // 预览模式：生成 HTML 即可，不构建 PPTX
+    setJob(jobId, { pptxPath: undefined, thumbnailsPath: undefined });
+
+    log(jobId, "向 LLM 发送生成 HTML slides 指令…");
+    await client.session.prompt({
+      path: { id: sessionId },
+      body: {
+        parts: [{ type: "text", text: instruction }],
+        model: getModelOverride(input),
+      },
+    });
+
+    await ensureExpectedSlides(jobId, slidesDir, slideCount);
+
+    setStatus2(jobId, "done");
+    log(jobId, "HTML slides 生成完成（可预览/调整，随后再渲染 PPTX）。");
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    setJob(jobId, { status: "error", error: message });
+    pushEvent(jobId, { type: "error", message, ts: now() });
+  }
+}
+
+export async function runRenderFromHtmlJob(jobId: string, input: PptJobInput) {
+  const job = getJob(jobId);
+  if (!job) return;
+
+  setStatus2(jobId, "running");
+  log(jobId, "使用已生成的 HTML slides 构建 PPTX…");
+
+  try {
+    const { client } = await getOpencodeHandle();
+
+    if (!job.sessionId) {
+      log(jobId, "sessionId 缺失，创建新的 opencode session…");
+      const session = unwrapData<{ id: string }>(
+        await client.session.create({
+          body: { title: `PPT Render: ${sanitizeOneLine(input.topic).slice(0, 60)}` },
+        })
+      );
+      if (!session?.id) {
+        throw new Error("创建 opencode session 失败：未返回 session.id（请检查服务鉴权/日志）");
+      }
+      setJob(jobId, { sessionId: session.id });
+      log(jobId, `sessionId=${session.id}`);
+    }
+
+    const sessionId = getJob(jobId)?.sessionId;
+    if (!sessionId) throw new Error("缺少 sessionId：无法继续渲染 PPTX");
+
+    const outDir = `workspace/jobs/${jobId}`;
+    const slidesDir = `${outDir}/slides`;
+    const pptxPath = `${outDir}/deck.pptx`;
+
+    // Prefer expected count if configured, otherwise just ensure slides exist.
+    const expected = input.slideCount ? Math.max(1, Math.min(50, input.slideCount)) : null;
+    const absSlidesDir = path.join(process.cwd(), slidesDir);
+    const files = await listHtmlSlides(absSlidesDir);
+    if (files.length === 0) {
+      throw new Error(`未找到 HTML slides（目录为空）：${slidesDir}`);
+    }
+    if (expected) {
+      await ensureExpectedSlides(jobId, slidesDir, expected);
+    } else {
+      log(jobId, `检测到 HTML slides：${files.length} 个`);
+    }
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await buildDeck(jobId, input, slidesDir, pptxPath);
+        setJob(jobId, { pptxPath, thumbnailsPath: undefined });
+        pushEvent(jobId, { type: "result", pptxPath, thumbnailsPath: null, ts: now() });
+        setStatus2(jobId, "done");
+        log(jobId, "PPTX 生成完成。");
+        return;
+      } catch (e) {
+        if (attempt >= 2) throw e;
+        const msg = e instanceof Error ? e.message : String(e);
+        log(jobId, `本地构建失败，尝试修复 HTML（第 ${attempt} 次）：${msg}`);
+        const fixInstruction = buildHtmlFixInstruction(slidesDir, msg);
+        try {
+          await client.session.prompt({
+            path: { id: sessionId },
+            body: {
+              parts: [{ type: "text", text: fixInstruction }],
+              model: getModelOverride(input),
+            },
+          });
+        } catch (fixErr) {
+          const fm = fixErr instanceof Error ? fixErr.message : String(fixErr);
+          log(jobId, `修复 HTML 的 LLM 请求失败：${fm}`);
+        }
+      }
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    setJob(jobId, { status: "error", error: message });
+    pushEvent(jobId, { type: "error", message, ts: now() });
+  }
+}
+
+export async function runHtmlAdjustJob(
+  jobId: string,
+  input: PptJobInput,
+  target: "all" | string,
+  feedback: string
+) {
+  const job = getJob(jobId);
+  if (!job) return;
+
+  setStatus2(jobId, "running");
+  log(jobId, "开始按意见调整 HTML slides…");
+
+  try {
+    const { client } = await getOpencodeHandle();
+
+    if (!job.sessionId) {
+      log(jobId, "sessionId 缺失，创建新的 opencode session…");
+      const session = unwrapData<{ id: string }>(
+        await client.session.create({
+          body: { title: `PPT HTML Adjust: ${sanitizeOneLine(input.topic).slice(0, 60)}` },
+        })
+      );
+      if (!session?.id) {
+        throw new Error("创建 opencode session 失败：未返回 session.id（请检查服务鉴权/日志）");
+      }
+      setJob(jobId, { sessionId: session.id });
+      log(jobId, `sessionId=${session.id}`);
+    }
+
+    const sessionId = getJob(jobId)?.sessionId;
+    if (!sessionId) throw new Error("缺少 sessionId：无法继续调整 HTML");
+
+    const slidesDir = `workspace/jobs/${jobId}/slides`;
+    const absSlidesDir = path.join(process.cwd(), slidesDir);
+    const files = await listHtmlSlides(absSlidesDir);
+    if (files.length === 0) {
+      throw new Error(`未找到 HTML slides（目录为空）：${slidesDir}`);
+    }
+
+    // Ensure version meta exists before changes.
+    await ensureSlideVersionsInitialized(jobId, await listHtmlSlidesByJob(jobId));
+
+    if (target !== "all") {
+      const normalized = path.posix.basename(target);
+      if (!/\.html$/i.test(normalized)) {
+        throw new Error("target 必须是 .html 文件名或 all");
+      }
+      if (!files.includes(normalized)) {
+        throw new Error(`目标 HTML 不存在：${normalized}`);
+      }
+      target = normalized;
+    }
+
+    // HTML 已变化，旧 PPTX 可能过期；先清理产物引用。
+    setJob(jobId, { pptxPath: undefined, thumbnailsPath: undefined });
+
+    const scopeFiles =
+      target === "all"
+        ? files
+        : files.filter((f) => f === path.posix.basename(String(target)));
+
+    const beforeHashes = new Map<string, string>();
+    for (const f of scopeFiles) {
+      try {
+        beforeHashes.set(f, await hashFile(path.join(absSlidesDir, f)));
+      } catch {
+        // ignore
+      }
+    }
+
+    const instruction = buildHtmlAdjustInstruction(slidesDir, target, feedback);
+    await client.session.prompt({
+      path: { id: sessionId },
+      body: {
+        parts: [{ type: "text", text: instruction }],
+        model: getModelOverride(input),
+      },
+    });
+
+    const changed: string[] = [];
+    for (const f of scopeFiles) {
+      try {
+        const after = await hashFile(path.join(absSlidesDir, f));
+        const before = beforeHashes.get(f);
+        if (!before || before !== after) changed.push(f);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (changed.length > 0) {
+      await snapshotSlideVersions(jobId, changed, feedback);
+      log(jobId, `已创建版本：${changed.join(", ")}`);
+    } else {
+      log(jobId, "未检测到 HTML 变化（未创建新版本）。");
+    }
+
+    setStatus2(jobId, "done");
+    log(jobId, "HTML 调整完成。可刷新预览或继续渲染 PPTX。");
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     setJob(jobId, { status: "error", error: message });

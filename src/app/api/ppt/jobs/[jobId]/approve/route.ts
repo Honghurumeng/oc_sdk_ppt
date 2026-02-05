@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { getJob, setJob, type PptJobInput } from "@/lib/jobStore";
-import { runDeckJob } from "@/lib/runJob";
+import { runDeckJob, runHtmlOnlyJob } from "@/lib/runJob";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,6 +47,9 @@ export async function POST(
     model: typeof obj.model === "string" ? obj.model : job.input.model,
   };
 
+  const buildModeRaw = typeof obj.buildMode === "string" ? obj.buildMode : "pptx";
+  const buildMode = buildModeRaw === "preview" ? "preview" : "pptx";
+
   // 如果前端允许编辑大纲，这里落盘覆盖 outline.md
   if (outlineMarkdown && outlineMarkdown.trim().length > 0) {
     const outlinePath = job.outlinePath ?? `${job.outputDir}/outline.md`;
@@ -58,7 +61,11 @@ export async function POST(
   setJob(jobId, { input: nextInput, error: undefined });
 
   queueMicrotask(() => {
-    void runDeckJob(jobId, nextInput);
+    if (buildMode === "preview") {
+      void runHtmlOnlyJob(jobId, nextInput);
+    } else {
+      void runDeckJob(jobId, nextInput);
+    }
   });
 
   return NextResponse.json({ ok: true });

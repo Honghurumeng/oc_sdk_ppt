@@ -5,10 +5,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Checkbox from "@mui/material/Checkbox";
 import Divider from "@mui/material/Divider";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import FormControl from "@mui/material/FormControl";
 import InputLabel from "@mui/material/InputLabel";
-import Link from "@mui/material/Link";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Select from "@mui/material/Select";
@@ -27,6 +28,18 @@ type JobResponse = {
   outlineMarkdown?: string | null;
   pptxUrl: string | null;
   thumbnailsUrl?: string | null;
+};
+
+type SlideVersion = {
+  id: string;
+  createdAt: number;
+  note?: string;
+};
+
+type SlideInfo = {
+  name: string;
+  activeVersion: string | null;
+  versions: SlideVersion[];
 };
 
 function fmtTime(ts: number) {
@@ -57,6 +70,18 @@ export default function PptJobForm() {
   const [logs, setLogs] = useState<{ ts: number; message: string }[]>([]);
   const [outlineMarkdown, setOutlineMarkdown] = useState<string>("");
   const [pptxUrl, setPptxUrl] = useState<string | null>(null);
+
+  const [previewHtml, setPreviewHtml] = useState(false);
+  const [showHtmlPreview, setShowHtmlPreview] = useState(false);
+  const [slides, setSlides] = useState<SlideInfo[]>([]);
+  const [slidesError, setSlidesError] = useState<string | null>(null);
+  const [htmlRev, setHtmlRev] = useState(0);
+  const [adjustTarget, setAdjustTarget] = useState<string>("all");
+  const [adjustFeedback, setAdjustFeedback] = useState<string>("");
+  const [isAdjusting, setIsAdjusting] = useState(false);
+  const [pendingSlidesReload, setPendingSlidesReload] = useState(false);
+  const [previewScale, setPreviewScale] = useState(1);
+  const previewHostRef = useRef<HTMLDivElement | null>(null);
 
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -233,6 +258,12 @@ export default function PptJobForm() {
   async function approve() {
     if (!jobId) return;
     setError(null);
+    setShowHtmlPreview(previewHtml);
+    if (previewHtml) {
+      setSlides([]);
+      setSlidesError(null);
+      setHtmlRev((v) => v + 1);
+    }
     const res = await fetch(`/api/ppt/jobs/${jobId}/approve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -241,6 +272,7 @@ export default function PptJobForm() {
         stylePreset,
         palette,
         model: model || undefined,
+        buildMode: previewHtml ? "preview" : "pptx",
       }),
     });
     if (!res.ok) {
@@ -249,6 +281,99 @@ export default function PptJobForm() {
       return;
     }
     await refreshJob(jobId);
+  }
+
+  async function loadSlides() {
+    if (!jobId) return;
+    setSlidesError(null);
+    const res = await fetch(`/api/ppt/jobs/${jobId}/slides`, { cache: "no-store" });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || data.ok !== true) {
+      setSlides([]);
+      setSlidesError((data.error as string) ?? "加载 slides 失败");
+      return;
+    }
+    const list = Array.isArray(data.slides) ? data.slides : [];
+    const parsed: SlideInfo[] = list
+      .map((x) => (typeof x === "object" && x !== null ? (x as any) : null))
+      .filter(Boolean)
+      .map((x) => ({
+        name: typeof x.name === "string" ? x.name : "",
+        activeVersion: typeof x.activeVersion === "string" ? x.activeVersion : null,
+        versions: Array.isArray(x.versions)
+          ? x.versions
+              .filter((v: any) => v && typeof v.id === "string")
+              .map((v: any) => ({
+                id: String(v.id),
+                createdAt: typeof v.createdAt === "number" ? v.createdAt : 0,
+                note: typeof v.note === "string" ? v.note : undefined,
+              }))
+          : [],
+      }))
+      .filter((s) => s.name && s.name.toLowerCase().endsWith(".html"));
+    setSlides(parsed);
+  }
+
+  async function activateVersion(slideName: string, versionId: string) {
+    if (!jobId) return;
+    setError(null);
+    const res = await fetch(`/api/ppt/jobs/${jobId}/slides/activate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slideName, versionId }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setError(data?.error ?? "切换版本失败");
+      return;
+    }
+    setHtmlRev((v) => v + 1);
+    void loadSlides();
+    await refreshJob(jobId);
+  }
+
+  async function renderFromHtml() {
+    if (!jobId) return;
+    setError(null);
+    const res = await fetch(`/api/ppt/jobs/${jobId}/render`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: model || undefined }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setError(data?.error ?? "渲染 PPTX 失败");
+      return;
+    }
+    await refreshJob(jobId);
+  }
+
+  async function adjustHtml() {
+    if (!jobId) return;
+    if (!adjustFeedback.trim()) return;
+    setIsAdjusting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/ppt/jobs/${jobId}/slides/adjust`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: adjustTarget,
+          feedback: adjustFeedback,
+          model: model || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data?.error ?? "调整 HTML 失败");
+        return;
+      }
+      // 后台异步调整：等状态回到 done 再刷新（避免读到旧 HTML）
+      setPendingSlidesReload(true);
+      await refreshJob(jobId);
+    } finally {
+      setIsAdjusting(false);
+    }
   }
 
   useEffect(() => {
@@ -271,6 +396,52 @@ export default function PptJobForm() {
   useEffect(() => {
     tailRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [logs.length]);
+
+  useEffect(() => {
+    if (!jobId) return;
+    // 只要 slides 存在，就允许预览（不强绑 buildMode，避免刷新页面后丢 UI）。
+    if (status === "done" && showHtmlPreview) {
+      void loadSlides();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, status, showHtmlPreview]);
+
+  useEffect(() => {
+    if (!jobId) return;
+    if (!showHtmlPreview) return;
+    if (!pendingSlidesReload) return;
+    if (status === "error") {
+      setPendingSlidesReload(false);
+      return;
+    }
+    if (status !== "done") return;
+    setPendingSlidesReload(false);
+    setHtmlRev((v) => v + 1);
+    void loadSlides();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, status, showHtmlPreview, pendingSlidesReload]);
+
+  useEffect(() => {
+    if (!showHtmlPreview) return;
+    const el = previewHostRef.current;
+    if (!el) return;
+
+    const BASE_W = 960;
+    const BASE_H = 540;
+
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const w = entry.contentRect.width;
+      const h = entry.contentRect.height;
+      const s = Math.min(w / BASE_W, h / BASE_H);
+      if (!Number.isFinite(s) || s <= 0) return;
+      setPreviewScale(s);
+    });
+
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [showHtmlPreview]);
 
   return (
     <Box>
@@ -465,6 +636,16 @@ export default function PptJobForm() {
                 <Button variant="contained" onClick={approve} disabled={!jobId}>
                   使用该大纲生成 PPT
                 </Button>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={previewHtml}
+                      onChange={(e) => setPreviewHtml(e.target.checked)}
+                      size="small"
+                    />
+                  }
+                  label="生成 HTML 后先预览"
+                />
                 <Typography variant="caption" sx={{ color: "text.secondary" }}>
                   你也可以先修改大纲，再点生成。
                 </Typography>
@@ -507,6 +688,143 @@ export default function PptJobForm() {
               <Button component="a" href={pptxUrl} variant="outlined">
                 下载 PPTX
               </Button>
+            </Stack>
+          ) : null}
+
+          {jobId && showHtmlPreview ? (
+            <Stack spacing={1.25}>
+              <Divider />
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                  HTML 预览
+                </Typography>
+                <Stack direction="row" spacing={1} sx={{ ml: { sm: "auto" } }}>
+                  <Button size="small" variant="outlined" onClick={loadSlides}>
+                    刷新 slides
+                  </Button>
+                </Stack>
+              </Stack>
+
+              {slidesError ? <Alert severity="warning">{slidesError}</Alert> : null}
+
+              {slides.length === 0 ? (
+                <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                  暂无 slides（等待生成完成或点击“刷新 slides”）。
+                </Typography>
+              ) : null}
+
+              <FormControl size="small" sx={{ maxWidth: 360 }}>
+                <InputLabel id="adjust-target-label">调整范围</InputLabel>
+                <Select
+                  labelId="adjust-target-label"
+                  label="调整范围"
+                  value={adjustTarget}
+                  onChange={(e) => setAdjustTarget(String(e.target.value))}
+                >
+                  <MenuItem value="all">全部 HTML</MenuItem>
+                  {slides.map((s) => (
+                    <MenuItem key={s.name} value={s.name}>
+                      {s.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <TextField
+                size="small"
+                label="修改意见"
+                value={adjustFeedback}
+                onChange={(e) => setAdjustFeedback(e.target.value)}
+                placeholder="例如：统一把标题字号调小一点，留出更大下边距；第 03 页用更简洁的 bullet；配色更克制…"
+                multiline
+                minRows={2}
+                fullWidth
+              />
+
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+                <Button size="small" variant="contained" onClick={renderFromHtml}>
+                  用当前 HTML 渲染 PPTX
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={adjustHtml}
+                  disabled={isAdjusting || !adjustFeedback.trim()}
+                >
+                  应用调整
+                </Button>
+              </Stack>
+
+              <Stack spacing={1.25}>
+                {slides.map((s, idx) => (
+                  <Paper
+                    key={`${s.name}-${s.activeVersion ?? "na"}-${htmlRev}`}
+                    variant="outlined"
+                    sx={{ p: 1 }}
+                  >
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      alignItems={{ sm: "center" }}
+                      justifyContent="space-between"
+                    >
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                        {s.name}
+                      </Typography>
+                      <FormControl size="small" sx={{ minWidth: 220 }}>
+                        <InputLabel id={`ver-${s.name.replace(/[^a-z0-9_-]/gi, "_")}`}>版本</InputLabel>
+                        <Select
+                          labelId={`ver-${s.name.replace(/[^a-z0-9_-]/gi, "_")}`}
+                          label="版本"
+                          value={s.activeVersion ?? ""}
+                          onChange={(e) => void activateVersion(s.name, String(e.target.value))}
+                        >
+                          {s.versions
+                            .slice()
+                            .sort((a, b) => b.createdAt - a.createdAt)
+                            .map((v) => (
+                              <MenuItem key={v.id} value={v.id}>
+                                {v.id}
+                                {v.note ? ` - ${v.note}` : ""}
+                              </MenuItem>
+                            ))}
+                        </Select>
+                      </FormControl>
+                    </Stack>
+                    <Box
+                      ref={idx === 0 ? previewHostRef : undefined}
+                      sx={{
+                        mt: 0.75,
+                        width: "100%",
+                        position: "relative",
+                        borderRadius: 1,
+                        overflow: "hidden",
+                        bgcolor: "#fff",
+                        border: "1px solid rgba(0,0,0,0.08)",
+                        paddingTop: "56.25%", // 16:9
+                      }}
+                    >
+                      <Box
+                        component="iframe"
+                        title={s.name}
+                        src={`/api/ppt/jobs/${jobId}/files/slides/${encodeURIComponent(
+                          s.name
+                        )}?ver=${encodeURIComponent(s.activeVersion ?? "")}&v=${htmlRev}`}
+                        scrolling="no"
+                        sx={{
+                          position: "absolute",
+                          inset: 0,
+                          width: 960,
+                          height: 540,
+                          transform: `scale(${previewScale})`,
+                          transformOrigin: "0 0",
+                          border: 0,
+                        }}
+                      />
+                    </Box>
+                  </Paper>
+                ))}
+              </Stack>
             </Stack>
           ) : null}
         </Stack>

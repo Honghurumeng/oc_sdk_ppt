@@ -43,6 +43,10 @@ Every HTML slide must include proper body dimensions:
 
 **NEVER use manual bullet symbols (•, -, *, etc.)** - Use `<ul>` or `<ol>` lists instead
 
+**Nested lists** (`<ul><li>...<ul><li>...</li></ul></li></ul>`) are supported, but must be real nested
+`<ul>/<ol>` markup (not manual symbols like `○`). The converter preserves nesting by extracting each
+`<ul>/<ol>` block separately.
+
 **ONLY use web-safe fonts that are universally available:**
 - ✅ Web-safe fonts: `Arial`, `Helvetica`, `Times New Roman`, `Georgia`, `Courier New`, `Verdana`, `Tahoma`, `Trebuchet MS`, `Impact`, `Comic Sans MS`
 - ❌ Wrong: `'Segoe UI'`, `'SF Pro'`, `'Roboto'`, custom fonts - **Might cause rendering issues**

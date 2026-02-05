@@ -769,7 +769,10 @@ async function extractSlideData(page) {
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) return;
 
-        const liElements = Array.from(el.querySelectorAll('li'));
+        // IMPORTANT: only take direct children (<ul><li>..</li></ul>)
+        // Using querySelectorAll('li') will flatten nested lists and cause
+        // duplicated / wrong-level bullets in PPTX.
+        const liElements = Array.from(el.children).filter((c) => c.tagName === 'LI');
         const items = [];
         const ulComputed = window.getComputedStyle(el);
         const ulPaddingLeftPt = pxToPoints(ulComputed.paddingLeft);
@@ -781,10 +784,14 @@ async function extractSlideData(page) {
 
         liElements.forEach((li, idx) => {
           const isLast = idx === liElements.length - 1;
-          const runs = parseInlineFormatting(li, { breakLine: false });
+          // Exclude nested lists from the parent list item's text.
+          const liClone = li.cloneNode(true);
+          liClone.querySelectorAll('ul, ol').forEach((n) => n.remove());
+
+          const runs = parseInlineFormatting(liClone, { breakLine: false });
           // Clean manual bullets from first run
           if (runs.length > 0) {
-            runs[0].text = runs[0].text.replace(/^[•\-\*▪▸]\s*/, '');
+            runs[0].text = runs[0].text.replace(/^[•\-\*▪▸○●◆◇■□]\s*/, '');
             runs[0].options.bullet = { indent: textIndent };
           }
           // Set breakLine on last run
