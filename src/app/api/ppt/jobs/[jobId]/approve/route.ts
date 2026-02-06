@@ -25,6 +25,13 @@ export async function POST(
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
 
+  if (job.status === "queued" || job.status === "running") {
+    return NextResponse.json(
+      { error: `任务正在执行中（status=${job.status}），请等待完成或失败后再开始新的生成。` },
+      { status: 409 }
+    );
+  }
+
   let body: unknown;
   try {
     body = await req.json();
@@ -60,11 +67,22 @@ export async function POST(
 
   setJob(jobId, { input: nextInput, error: undefined });
 
-  queueMicrotask(() => {
-    if (buildMode === "preview") {
-      void runHtmlOnlyJob(jobId, nextInput);
-    } else {
-      void runDeckJob(jobId, nextInput);
+  // Mark queued immediately so UI can reflect the transition even if the
+  // background task starts slightly later.
+  setJob(jobId, { status: "queued", error: undefined });
+
+  // Start the long-running job in background.
+  // In some Next.js runtimes/dev reload scenarios, queueMicrotask() can be flaky
+  // for background work; setImmediate is more reliable.
+  setImmediate(() => {
+    try {
+      if (buildMode === "preview") {
+        void runHtmlOnlyJob(jobId, nextInput);
+      } else {
+        void runDeckJob(jobId, nextInput);
+      }
+    } catch {
+      // ignore
     }
   });
 

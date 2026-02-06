@@ -23,6 +23,13 @@ export async function POST(
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
 
+  if (job.status === "queued" || job.status === "running") {
+    return NextResponse.json(
+      { error: `任务正在执行中（status=${job.status}），请等待完成或失败后再调整。` },
+      { status: 409 }
+    );
+  }
+
   let body: unknown;
   try {
     body = await req.json();
@@ -40,10 +47,14 @@ export async function POST(
     model: typeof obj.model === "string" ? obj.model : job.input.model,
   };
 
-  setJob(jobId, { input: nextInput, error: undefined });
+  setJob(jobId, { input: nextInput, error: undefined, status: "queued" });
 
-  queueMicrotask(() => {
-    void runHtmlAdjustJob(jobId, nextInput, target === "all" ? "all" : target, feedback);
+  setImmediate(() => {
+    try {
+      void runHtmlAdjustJob(jobId, nextInput, target === "all" ? "all" : target, feedback);
+    } catch {
+      // ignore
+    }
   });
 
   return NextResponse.json({ ok: true });

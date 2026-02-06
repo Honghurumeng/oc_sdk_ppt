@@ -274,6 +274,18 @@ function tryRehydrateJob(jobId: string): PptJob | null {
   return job;
 }
 
+function tryReadPersistedJob(jobId: string): PptJob | null {
+  if (!isSafeId(jobId)) return null;
+  try {
+    const raw = fs.readFileSync(absJobStatePath(jobId), "utf-8");
+    const parsed = safeJsonParse<PptJob>(raw);
+    if (!parsed || parsed.id !== jobId) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function persistJob(job: PptJob) {
   if (!isSafeId(job.id)) return;
 
@@ -340,7 +352,21 @@ export function createJob(job: PptJob) {
 
 export function getJob(jobId: string) {
   const inMem = jobs.get(jobId);
-  if (inMem) return inMem;
+  if (inMem) {
+    // In dev / multi-worker runtimes, background work and API reads may happen
+    // in different processes. If another process updated job.json on disk,
+    // refresh our in-memory snapshot.
+    const persisted = tryReadPersistedJob(jobId);
+    if (persisted && typeof persisted.updatedAt === "number") {
+      const memUpdatedAt = typeof inMem.updatedAt === "number" ? inMem.updatedAt : 0;
+      if (persisted.updatedAt > memUpdatedAt) {
+        jobs.set(jobId, persisted);
+        getEmitter(jobId);
+        return persisted;
+      }
+    }
+    return inMem;
+  }
 
   const rehydrated = tryRehydrateJob(jobId);
   if (!rehydrated) return null;

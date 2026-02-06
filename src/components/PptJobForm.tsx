@@ -164,6 +164,8 @@ export default function PptJobForm() {
     return true;
   }, [topic, slideCount]);
 
+  const isJobBusy = status === "queued" || status === "running";
+
   async function loadModelOptions() {
     try {
       setModelLoadError(null);
@@ -596,6 +598,9 @@ export default function PptJobForm() {
     if (!jobId) return;
     // 只要 slides 存在，就允许预览（不强绑 buildMode，避免刷新页面后丢 UI）。
     if (status === "done" && showHtmlPreview) {
+      // If HTML files changed on disk but iframe src didn't change, the browser
+      // can keep showing a stale document. Bump htmlRev to force iframe reload.
+      setHtmlRev((v) => v + 1);
       void loadSlides();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -996,10 +1001,15 @@ export default function PptJobForm() {
             <Button
               variant="contained"
               onClick={start}
-              disabled={!canSubmit || modelOptions.length === 0}
+              disabled={!canSubmit || modelOptions.length === 0 || isJobBusy}
             >
               生成大纲
             </Button>
+            {isJobBusy ? (
+              <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                当前任务执行中，已暂时禁用新建任务。
+              </Typography>
+            ) : null}
             <Typography variant="body2" sx={{ color: "text.secondary" }}>
               {jobId ? (
                 <span>
@@ -1054,7 +1064,7 @@ export default function PptJobForm() {
                 }}
               />
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
-                <Button variant="contained" onClick={approve} disabled={!jobId}>
+                <Button variant="contained" onClick={approve} disabled={!jobId || isJobBusy}>
                   使用该大纲生成 PPT
                 </Button>
                 <FormControlLabel
@@ -1068,7 +1078,7 @@ export default function PptJobForm() {
                   label="生成 HTML 后先预览"
                 />
                 <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                  你也可以先修改大纲，再点生成。
+                  {isJobBusy ? "任务执行中：请等待完成/失败后再触发新的生成。" : "你也可以先修改大纲，再点生成。"}
                 </Typography>
               </Stack>
             </Stack>
@@ -1115,16 +1125,23 @@ export default function PptJobForm() {
           {jobId && showHtmlPreview ? (
             <Stack spacing={1.25}>
               <Divider />
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-                  HTML 预览
-                </Typography>
-                <Stack direction="row" spacing={1} sx={{ ml: { sm: "auto" } }}>
-                  <Button size="small" variant="outlined" onClick={() => void loadSlides()}>
-                    刷新 slides
-                  </Button>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                    HTML 预览
+                  </Typography>
+                  <Stack direction="row" spacing={1} sx={{ ml: { sm: "auto" } }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => {
+                        setHtmlRev((v) => v + 1);
+                        void loadSlides();
+                      }}
+                    >
+                      刷新 slides
+                    </Button>
+                  </Stack>
                 </Stack>
-              </Stack>
 
               {slidesError ? <Alert severity="warning">{slidesError}</Alert> : null}
 
@@ -1163,14 +1180,14 @@ export default function PptJobForm() {
               />
 
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
-                <Button size="small" variant="contained" onClick={renderFromHtml}>
+                <Button size="small" variant="contained" onClick={renderFromHtml} disabled={isJobBusy}>
                   用当前 HTML 渲染 PPTX
                 </Button>
                 <Button
                   size="small"
                   variant="outlined"
                   onClick={adjustHtml}
-                  disabled={isAdjusting || !adjustFeedback.trim()}
+                  disabled={isAdjusting || !adjustFeedback.trim() || isJobBusy}
                 >
                   应用调整
                 </Button>

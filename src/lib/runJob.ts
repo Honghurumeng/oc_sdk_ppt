@@ -187,10 +187,10 @@ function buildDeckInstruction(
     "- 内容必须留出底部至少 0.5 英寸（约 36pt）空白，避免文字贴底或溢出。",
     "",
     "推荐模板（每页都复用这套排版，避免溢出/校验失败）：",
-    "- body: width:720pt; height:405pt; padding:36pt 48pt 54pt; box-sizing:border-box;",
-    "- h1: margin:0 0 16pt 0; font-size:34pt; line-height:1.1;",
-    "- ul: margin:0; padding-left:24pt;",
-    "- li: margin:0 0 8pt 0; font-size:20pt; line-height:1.25;",
+    "- body: width:720pt; height:405pt; padding:32pt 48pt 48pt; box-sizing:border-box;",
+    "- h1: margin:0 0 14pt 0; font-size:34pt; line-height:1.1;",
+    "- ul: margin:0; padding-left:22pt;",
+    "- li: margin:0 0 6pt 0; font-size:18pt; line-height:1.2;",
     "",
     "执行步骤（按顺序执行，全部成功后再回复 DONE）：",
     slideCount
@@ -273,6 +273,23 @@ function buildHtmlFixInstruction(slidesDir: string, errors: string) {
 }
 
 const execFileAsync = promisify(execFile);
+
+async function validateHtmlSlides(slidesDir: string) {
+  const absSlidesDir = path.join(process.cwd(), slidesDir);
+  const validateScript = path.join(process.cwd(), "scripts", "validate_slides.mjs");
+  try {
+    await execFileAsync("node", [validateScript, absSlidesDir], { cwd: process.cwd() });
+  } catch (e) {
+    const err = e as { stderr?: unknown; message?: unknown };
+    const stderr = typeof err.stderr === "string" ? err.stderr : "";
+    const hint = stderr.trim()
+      ? stderr.trim()
+      : typeof err.message === "string"
+        ? err.message
+        : String(e);
+    throw new Error(`HTML 溢出/尺寸校验失败：${hint}`);
+  }
+}
 
 function listHtmlSlides(absSlidesDir: string) {
   return fs
@@ -500,9 +517,11 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
 
     await ensureExpectedSlides(jobId, slidesDir, effectiveSlideCount);
 
-    // Try building locally; if HTML validation fails, ask LLM to fix the HTML and retry.
+    // Validate HTML first (overflow / body size), then try building locally.
+    // If validation/build fails, ask LLM to fix the HTML and retry.
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
+        await validateHtmlSlides(slidesDir);
         await buildDeck(jobId, input, slidesDir, pptxPath);
 
         setJob(jobId, { pptxPath, thumbnailsPath: undefined });
@@ -611,6 +630,30 @@ export async function runHtmlOnlyJob(jobId: string, input: PptJobInput) {
     });
 
     await ensureExpectedSlides(jobId, slidesDir, effectiveSlideCount);
+
+    // Validate overflow / body size right after HTML generation.
+    // If it fails, ask LLM to fix once, then re-validate.
+    try {
+      await validateHtmlSlides(slidesDir);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      log(jobId, `HTML 校验失败，尝试修复：${msg}`);
+      const fixInstruction = buildHtmlFixInstruction(slidesDir, msg);
+      try {
+        await client.session.prompt({
+          path: { id: sessionId },
+          body: {
+            parts: [{ type: "text", text: fixInstruction }],
+            model: getModelOverride(input),
+          },
+        });
+      } catch (fixErr) {
+        const fm = fixErr instanceof Error ? fixErr.message : String(fixErr);
+        log(jobId, `修复 HTML 的 LLM 请求失败：${fm}`);
+      }
+      await ensureExpectedSlides(jobId, slidesDir, effectiveSlideCount);
+      await validateHtmlSlides(slidesDir);
+    }
 
     setStatus2(jobId, "done");
     log(jobId, "HTML slides 生成完成（可预览/调整，随后再渲染 PPTX）。");
