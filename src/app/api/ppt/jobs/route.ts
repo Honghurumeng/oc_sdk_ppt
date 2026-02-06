@@ -189,15 +189,21 @@ export async function POST(req: Request) {
     unknown
   >;
 
+  let slideCount: number | undefined = undefined;
+  if (Object.prototype.hasOwnProperty.call(obj, "slideCount")) {
+    const raw = obj.slideCount;
+    const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : Number.NaN;
+    if (Number.isFinite(n)) slideCount = n;
+  }
+
   const input: PptJobInput = {
     topic: String(obj.topic ?? "").trim(),
     language: obj.language ? String(obj.language) : undefined,
-    slideCount: obj.slideCount ? Number(obj.slideCount) : undefined,
+    // slideCount=0 is allowed (means: let AI decide)
+    slideCount,
     audience: obj.audience ? String(obj.audience) : undefined,
     tone: obj.tone ? String(obj.tone) : undefined,
-    referenceContent: obj.referenceContent
-      ? String(obj.referenceContent).trim()
-      : undefined,
+    referenceContent: obj.referenceContent ? String(obj.referenceContent).trim() : undefined,
     stylePreset: obj.stylePreset ? String(obj.stylePreset) : undefined,
     palette: obj.palette ? String(obj.palette) : undefined,
     model: obj.model ? String(obj.model) : undefined,

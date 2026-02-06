@@ -129,7 +129,13 @@ export default function PptJobForm() {
   const tailRef = useRef<HTMLDivElement | null>(null);
   const seenLogRef = useRef<Set<string>>(new Set());
 
-  const canSubmit = useMemo(() => topic.trim().length > 0, [topic]);
+  const canSubmit = useMemo(() => {
+    if (topic.trim().length === 0) return false;
+    if (!Number.isFinite(slideCount)) return false;
+    if (slideCount === 0) return true; // 0 = let AI decide
+    if (slideCount < 3 || slideCount > 20) return false;
+    return true;
+  }, [topic, slideCount]);
 
   async function loadModelOptions() {
     try {
@@ -745,9 +751,32 @@ export default function PptJobForm() {
             <TextField
               label="页数"
               type="number"
-              inputProps={{ min: 3, max: 20 }}
+              inputProps={{ min: 0, max: 20 }}
               value={slideCount}
-              onChange={(e) => setSlideCount(Number(e.target.value))}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw === "") {
+                  setSlideCount(0);
+                  return;
+                }
+                const n = Number(raw);
+                setSlideCount(Number.isFinite(n) ? n : 0);
+              }}
+              error={
+                !Number.isFinite(slideCount) ||
+                slideCount < 0 ||
+                slideCount > 20 ||
+                (slideCount !== 0 && slideCount < 3)
+              }
+              helperText={
+                slideCount === 0
+                  ? "已选择：由 AI 自行决定页数（范围 3-20）"
+                  : slideCount < 3
+                    ? "页数最少 3；输入 0 表示让 AI 自行决定页数"
+                    : slideCount > 20
+                      ? "页数最多 20；或输入 0 让 AI 自行决定"
+                      : "输入 0 表示让 AI 自行决定页数（范围 3-20）"
+              }
               fullWidth
               size="small"
             />

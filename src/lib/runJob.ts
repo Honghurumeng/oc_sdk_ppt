@@ -35,6 +35,32 @@ function sanitizeMultiline(s: string) {
   return s.replace(/\0/g, "").replace(/\r\n/g, "\n");
 }
 
+function clampInt(n: number, min: number, max: number) {
+  const x = Math.round(n);
+  return Math.max(min, Math.min(max, x));
+}
+
+function getRequestedSlideCount(input: PptJobInput):
+  | { mode: "fixed"; count: number }
+  | { mode: "auto" } {
+  const raw = input.slideCount;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    if (raw === 0) return { mode: "auto" };
+    if (raw > 0) return { mode: "fixed", count: clampInt(raw, 3, 20) };
+  }
+  return { mode: "fixed", count: 8 };
+}
+
+function countSlidesFromOutlineMarkdown(md: string): number | null {
+  const lines = md.split("\n");
+  let count = 0;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (/^##\s+Slide\s+\d+\s*:/i.test(line)) count++;
+  }
+  return count > 0 ? count : null;
+}
+
 function parseProviderModel(s: string) {
   const v = s.trim();
   const idx = v.indexOf("/");
@@ -62,7 +88,7 @@ function getModelOverride(input: PptJobInput) {
 function buildOutlineInstruction(jobId: string, input: PptJobInput) {
   const topic = sanitizeOneLine(input.topic);
   const language = sanitizeOneLine(input.language ?? "中文");
-  const slideCount = Math.max(3, Math.min(20, input.slideCount ?? 8));
+  const slideConfig = getRequestedSlideCount(input);
   const audience = sanitizeOneLine(input.audience ?? "一般受众");
   const tone = sanitizeOneLine(input.tone ?? "专业、清晰、偏实用");
   const referenceContentRaw =
@@ -81,7 +107,9 @@ function buildOutlineInstruction(jobId: string, input: PptJobInput) {
     "",
     `主题：${topic}`,
     `语言：${language}`,
-    `页数：${slideCount}`,
+    slideConfig.mode === "fixed"
+      ? `页数：${slideConfig.count}`
+      : "页数：由你决定（输入页数=0；请在 3-20 范围内选择最合适的页数，并在大纲中体现）",
     `受众：${audience}`,
     `语气/风格：${tone}`,
     referenceContent
@@ -96,13 +124,16 @@ function buildOutlineInstruction(jobId: string, input: PptJobInput) {
     "",
     "大纲格式要求：",
     "- 输出为 Markdown，按 slide 分节，使用 ## Slide N: 标题",
+    slideConfig.mode === "auto"
+      ? "- Slide 必须从 1 连续编号到你决定的最后一页（不要跳号/重复号）"
+      : "- Slide 必须从 1 连续编号到最后一页（不要跳号/重复号）",
     "- 每页给出 3-6 个要点（用 - 列表），必要时加一行讲者备注（Notes: ...）",
     "- 内容密度适配页数，不要出现空洞口号",
     "",
     "执行步骤（按顺序执行，全部成功后再回复 DONE）：",
     `1) 创建目录：mkdir -p ${outDir}`,
     `2) 写入大纲到 ${outlinePath}`,
-    "3) 自检：确认大纲文件存在且内容完整。",
+    "3) 自检：确认大纲文件存在且内容完整；Slide 编号连续；页数与内容密度匹配。",
     "",
     "最后只输出：DONE + 大纲路径，不要输出大段解释。",
   ].join("\n");
@@ -110,10 +141,20 @@ function buildOutlineInstruction(jobId: string, input: PptJobInput) {
   return { instruction, outDir, outlinePath };
 }
 
-function buildDeckInstruction(jobId: string, input: PptJobInput) {
+function buildDeckInstruction(
+  jobId: string,
+  input: PptJobInput,
+  opts?: { effectiveSlideCount?: number | null }
+) {
   const topic = sanitizeOneLine(input.topic);
   const language = sanitizeOneLine(input.language ?? "中文");
-  const slideCount = Math.max(3, Math.min(20, input.slideCount ?? 8));
+  const slideConfig = getRequestedSlideCount(input);
+  const slideCount =
+    typeof opts?.effectiveSlideCount === "number" && Number.isFinite(opts.effectiveSlideCount)
+      ? clampInt(opts.effectiveSlideCount, 1, 50)
+      : slideConfig.mode === "fixed"
+        ? slideConfig.count
+        : null;
 
   const outDir = `workspace/jobs/${jobId}`;
   const slidesDir = `${outDir}/slides`;
@@ -129,7 +170,7 @@ function buildDeckInstruction(jobId: string, input: PptJobInput) {
     "",
     `主题：${topic}`,
     `语言：${language}`,
-    `页数：${slideCount}`,
+    slideCount ? `页数：${slideCount}` : "页数：与大纲一致（由大纲决定）",
     `风格预设：${stylePreset}`,
     `配色方案：${palette}`,
     "",
@@ -152,9 +193,13 @@ function buildDeckInstruction(jobId: string, input: PptJobInput) {
     "- li: margin:0 0 8pt 0; font-size:20pt; line-height:1.25;",
     "",
     "执行步骤（按顺序执行，全部成功后再回复 DONE）：",
-    `1) 读取大纲：cat ${outlinePath}（确认 slide 数量与用户要求一致）`,
+    slideCount
+      ? `1) 读取大纲：cat ${outlinePath}（确认 slide 数量为 ${slideCount}，且 Slide 编号连续）`
+      : `1) 读取大纲：cat ${outlinePath}（统计 ## Slide N: 标题 的数量 N，且编号连续）`,
     `2) 创建目录：mkdir -p ${slidesDir}`,
-    `3) 基于大纲生成 ${slideCount} 个 HTML 页面到 ${slidesDir}（命名 01.html, 02.html...），内容要完整可读。`,
+    slideCount
+      ? `3) 基于大纲生成 ${slideCount} 个 HTML 页面到 ${slidesDir}（命名 01.html, 02.html...），内容要完整可读。`
+      : `3) 基于大纲生成 N 个 HTML 页面到 ${slidesDir}（命名 01.html, 02.html... 到 N.html），内容要完整可读。`,
     "4) 自检：确认 HTML 文件全部存在且非空。",
     "",
     "最后只输出：DONE + slides 目录路径，不要输出大段解释。",
@@ -299,9 +344,13 @@ async function buildDeck(
       { cwd: process.cwd() }
     );
   } catch (e) {
-    const err = e as any;
-    const stderr = typeof err?.stderr === "string" ? err.stderr : "";
-    const hint = stderr.trim() ? stderr.trim() : err?.message ? String(err.message) : String(e);
+    const err = e as { stderr?: unknown; message?: unknown };
+    const stderr = typeof err.stderr === "string" ? err.stderr : "";
+    const hint = stderr.trim()
+      ? stderr.trim()
+      : typeof err.message === "string"
+        ? err.message
+        : String(e);
     throw new Error(`PPTX 构建失败：${hint}`);
   }
 
@@ -362,6 +411,11 @@ export async function runOutlineJob(jobId: string, input: PptJobInput) {
       throw new Error("大纲文件未生成或内容过短，请查看 session 日志");
     }
 
+    if (typeof input.slideCount === "number" && input.slideCount === 0) {
+      const n = countSlidesFromOutlineMarkdown(outlineMarkdown);
+      if (n) log(jobId, `页数=0：模型在大纲中生成了 ${n} 页`);
+    }
+
     setJob(jobId, { outlinePath, outlineMarkdown });
     pushEvent(jobId, { type: "outline", outlineMarkdown, ts: now() });
     setStatus2(jobId, "awaiting_approval");
@@ -381,7 +435,7 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
   log(jobId, "开始生成 PPTX…");
 
   try {
-    const slideCount = Math.max(3, Math.min(20, input.slideCount ?? 8));
+    const slideConfig = getRequestedSlideCount(input);
 
     const { client } = await getOpencodeHandle();
 
@@ -405,10 +459,7 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
     if (!sessionId) {
       throw new Error("缺少 sessionId：无法继续生成 PPT");
     }
-    const { instruction, pptxPath, outlinePath } = buildDeckInstruction(
-      jobId,
-      input
-    );
+    const { pptxPath, outlinePath } = buildDeckInstruction(jobId, input);
 
     const slidesDir = `${path.posix.dirname(pptxPath)}/slides`;
 
@@ -417,6 +468,20 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
     if (!outlineMarkdown || outlineMarkdown.trim().length < 50) {
       throw new Error("outline.md 不存在或内容过短");
     }
+
+    const outlinedCount = countSlidesFromOutlineMarkdown(outlineMarkdown);
+    const effectiveSlideCount =
+      slideConfig.mode === "auto" ? outlinedCount : (slideConfig.count as number);
+    if (!effectiveSlideCount) {
+      throw new Error("输入页数=0，但无法从大纲解析页数（请确保使用 '## Slide N: 标题' 格式）");
+    }
+    if (slideConfig.mode === "auto") {
+      log(jobId, `页数=0：从大纲解析到 ${effectiveSlideCount} 页（将按该页数生成 HTML slides）`);
+    }
+
+    const { instruction } = buildDeckInstruction(jobId, input, {
+      effectiveSlideCount,
+    });
 
     log(jobId, "向 LLM 发送生成 HTML slides 指令…");
     let promptError: string | null = null;
@@ -433,7 +498,7 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
       log(jobId, `LLM 请求失败：${promptError}（将尝试继续本地构建）`);
     }
 
-    await ensureExpectedSlides(jobId, slidesDir, slideCount);
+    await ensureExpectedSlides(jobId, slidesDir, effectiveSlideCount);
 
     // Try building locally; if HTML validation fails, ask LLM to fix the HTML and retry.
     for (let attempt = 1; attempt <= 2; attempt++) {
@@ -464,7 +529,7 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
           log(jobId, `修复 HTML 的 LLM 请求失败：${fm}`);
         }
 
-        await ensureExpectedSlides(jobId, slidesDir, slideCount);
+        await ensureExpectedSlides(jobId, slidesDir, effectiveSlideCount);
       }
     }
 
@@ -489,7 +554,7 @@ export async function runHtmlOnlyJob(jobId: string, input: PptJobInput) {
   log(jobId, "开始生成 HTML slides（预览模式）…");
 
   try {
-    const slideCount = Math.max(3, Math.min(20, input.slideCount ?? 8));
+    const slideConfig = getRequestedSlideCount(input);
 
     const { client } = await getOpencodeHandle();
 
@@ -510,7 +575,7 @@ export async function runHtmlOnlyJob(jobId: string, input: PptJobInput) {
     const sessionId = getJob(jobId)?.sessionId;
     if (!sessionId) throw new Error("缺少 sessionId：无法继续生成 HTML");
 
-    const { instruction, pptxPath, outlinePath } = buildDeckInstruction(jobId, input);
+    const { pptxPath, outlinePath } = buildDeckInstruction(jobId, input);
     const slidesDir = `${path.posix.dirname(pptxPath)}/slides`;
 
     const absOutline = path.join(process.cwd(), outlinePath);
@@ -519,8 +584,22 @@ export async function runHtmlOnlyJob(jobId: string, input: PptJobInput) {
       throw new Error("outline.md 不存在或内容过短");
     }
 
+    const outlinedCount = countSlidesFromOutlineMarkdown(outlineMarkdown);
+    const effectiveSlideCount =
+      slideConfig.mode === "auto" ? outlinedCount : (slideConfig.count as number);
+    if (!effectiveSlideCount) {
+      throw new Error("输入页数=0，但无法从大纲解析页数（请确保使用 '## Slide N: 标题' 格式）");
+    }
+    if (slideConfig.mode === "auto") {
+      log(jobId, `页数=0：从大纲解析到 ${effectiveSlideCount} 页（将按该页数生成 HTML slides）`);
+    }
+
     // 预览模式：生成 HTML 即可，不构建 PPTX
     setJob(jobId, { pptxPath: undefined, thumbnailsPath: undefined });
+
+    const { instruction } = buildDeckInstruction(jobId, input, {
+      effectiveSlideCount,
+    });
 
     log(jobId, "向 LLM 发送生成 HTML slides 指令…");
     await client.session.prompt({
@@ -531,7 +610,7 @@ export async function runHtmlOnlyJob(jobId: string, input: PptJobInput) {
       },
     });
 
-    await ensureExpectedSlides(jobId, slidesDir, slideCount);
+    await ensureExpectedSlides(jobId, slidesDir, effectiveSlideCount);
 
     setStatus2(jobId, "done");
     log(jobId, "HTML slides 生成完成（可预览/调整，随后再渲染 PPTX）。");
