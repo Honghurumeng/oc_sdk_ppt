@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "openai": {
+      "npm": "@ai-sdk/openai",
+      "options": {
+        "baseURL": "https://api.openai.com/v1",
+        "apiKey": ""
+      },
+      "models": {
+        "gpt-4.1-mini": { "name": "gpt-4.1-mini" }
+      }
+    },
+    "myprovider": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://api.myprovider.com/v1",
+        "apiKey": ""
+      },
+      "models": {
+        "my-model-name": { "name": "my-model-name" }
+      }
+    }
+  }
+}
