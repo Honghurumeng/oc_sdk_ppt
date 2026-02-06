@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import Alert from "@mui/material/Alert";
+import Autocomplete from "@mui/material/Autocomplete";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Checkbox from "@mui/material/Checkbox";
@@ -79,6 +80,32 @@ function fmtDateTime(ts: number) {
   if (!ts) return "-";
   const d = new Date(ts);
   return d.toLocaleString();
+}
+
+type LabeledOption = { label: string; description: string };
+
+const STYLE_PRESET_OPTIONS: LabeledOption[] = [
+  { label: "Editorial", description: "杂志排版感；大标题 + 简短导语 + 规整要点，留白更大" },
+  { label: "Modern Grid", description: "强网格对齐；模块化分区，适合框架/方法论/结构化内容" },
+  { label: "Minimal Swiss", description: "极简瑞士风；用字号层级和间距建立秩序，干净克制" },
+  { label: "Corporate Clean", description: "企业简报；标题条/分隔线清晰，适合汇报/周报" },
+  { label: "Data Brief", description: "数据简报；每页 1 结论 + 证据点 + 图表占位区" },
+  { label: "Product Pitch", description: "路演结构；问题-方案-价值-落地，文案更短更有冲击" },
+];
+
+const PALETTE_OPTIONS: LabeledOption[] = [
+  { label: "Sand & Ink", description: "暖米色底 + 墨黑字；稳重耐看，适合长文与培训" },
+  { label: "Slate & Citrus", description: "石板灰/冷白为底 + 柑橘橙强调；重点突出" },
+  { label: "Navy & Brass", description: "海军蓝结构色 + 黄铜金强调；更商务更高端" },
+  { label: "Pine & Cream", description: "松绿 + 奶油白；沉稳自然，适合组织/运营主题" },
+  { label: "Teal & Coral", description: "青蓝结构色 + 珊瑚橙强调；现代、有活力" },
+  { label: "Graphite & Sky", description: "石墨灰主字 + 天空蓝强调；科技但不冷" },
+];
+
+function findOption(options: LabeledOption[], value: string) {
+  const v = value.trim();
+  if (!v) return null;
+  return options.find((o) => o.label.toLowerCase() === v.toLowerCase()) ?? null;
 }
 
 const monoFontFamily =
@@ -823,21 +850,118 @@ export default function PptJobForm() {
           />
 
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-            <TextField
-              label="模板/风格预设"
-              value={stylePreset}
-              onChange={(e) => setStylePreset(e.target.value)}
-              placeholder="Editorial / Modern Grid / Clean"
+            <Autocomplete
+              freeSolo
+              options={STYLE_PRESET_OPTIONS}
+              value={findOption(STYLE_PRESET_OPTIONS, stylePreset) ?? stylePreset}
+              onChange={(_, v) => {
+                if (typeof v === "string") {
+                  setStylePreset(v);
+                  return;
+                }
+                if (v && typeof (v as any).label === "string") {
+                  setStylePreset(String((v as LabeledOption).label));
+                  return;
+                }
+              }}
+              inputValue={stylePreset}
+              onInputChange={(_, v) => setStylePreset(v)}
+              getOptionLabel={(opt) => (typeof opt === "string" ? opt : opt.label)}
+              isOptionEqualToValue={(opt, val) => {
+                const a = typeof opt === "string" ? opt : opt.label;
+                const b = typeof val === "string" ? val : val.label;
+                return a.toLowerCase() === b.toLowerCase();
+              }}
+              renderOption={(props, opt) => {
+                // MUI passes a `key` inside the props object; React requires `key` to be
+                // passed explicitly rather than via spread.
+                const { key, ...rest } = props as unknown as Record<string, unknown>;
+                return (
+                  <Box component="li" key={String(key ?? opt.label)} {...(rest as any)}>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                        {opt.label}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                        {opt.description}
+                      </Typography>
+                    </Box>
+                  </Box>
+                );
+              }}
+              renderInput={(params) => {
+                const matched = findOption(STYLE_PRESET_OPTIONS, stylePreset);
+                return (
+                  <TextField
+                    {...params}
+                    label="模板/风格预设"
+                    placeholder="选择推荐项或输入自定义"
+                    size="small"
+                    helperText={
+                      matched
+                        ? matched.description
+                        : "可从推荐项选择；也可直接输入自定义名称（会原样传给模型）"
+                    }
+                  />
+                );
+              }}
               fullWidth
-              size="small"
             />
-            <TextField
-              label="配色方案"
-              value={palette}
-              onChange={(e) => setPalette(e.target.value)}
-              placeholder="Sand & Ink / Teal & Coral"
+
+            <Autocomplete
+              freeSolo
+              options={PALETTE_OPTIONS}
+              value={findOption(PALETTE_OPTIONS, palette) ?? palette}
+              onChange={(_, v) => {
+                if (typeof v === "string") {
+                  setPalette(v);
+                  return;
+                }
+                if (v && typeof (v as any).label === "string") {
+                  setPalette(String((v as LabeledOption).label));
+                  return;
+                }
+              }}
+              inputValue={palette}
+              onInputChange={(_, v) => setPalette(v)}
+              getOptionLabel={(opt) => (typeof opt === "string" ? opt : opt.label)}
+              isOptionEqualToValue={(opt, val) => {
+                const a = typeof opt === "string" ? opt : opt.label;
+                const b = typeof val === "string" ? val : val.label;
+                return a.toLowerCase() === b.toLowerCase();
+              }}
+              renderOption={(props, opt) => {
+                const { key, ...rest } = props as unknown as Record<string, unknown>;
+                return (
+                  <Box component="li" key={String(key ?? opt.label)} {...(rest as any)}>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                        {opt.label}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                        {opt.description}
+                      </Typography>
+                    </Box>
+                  </Box>
+                );
+              }}
+              renderInput={(params) => {
+                const matched = findOption(PALETTE_OPTIONS, palette);
+                return (
+                  <TextField
+                    {...params}
+                    label="配色方案"
+                    placeholder="选择推荐项或输入自定义"
+                    size="small"
+                    helperText={
+                      matched
+                        ? matched.description
+                        : "可从推荐项选择；也可直接输入自定义名称（会原样传给模型）"
+                    }
+                  />
+                );
+              }}
               fullWidth
-              size="small"
             />
           </Stack>
 
