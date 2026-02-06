@@ -164,6 +164,213 @@ function buildDeckInstruction(
   const stylePreset = sanitizeOneLine(input.stylePreset ?? "Editorial");
   const palette = sanitizeOneLine(input.palette ?? "Sand & Ink");
 
+  function normalizeKey(s: string) {
+    return s.trim().toLowerCase();
+  }
+
+  function buildStylePresetGuide(presetRaw: string, paletteRaw: string) {
+    const preset = normalizeKey(presetRaw);
+    const palette = normalizeKey(paletteRaw);
+
+    // Keep this guide short, prescriptive, and safe for the html2pptx validator.
+    // The model will likely default to a single UL-heavy layout unless we provide
+    // multiple concrete layout skeletons.
+    const paletteHints: Record<
+      string,
+      { bg: string; fg: string; muted: string; accent: string; accent2?: string }
+    > = {
+      "sand & ink": {
+        bg: "#F4F0E6",
+        fg: "#141414",
+        muted: "#6B6257",
+        accent: "#B05A2A",
+      },
+      "slate & citrus": {
+        bg: "#F3F5F7",
+        fg: "#111418",
+        muted: "#5C6770",
+        accent: "#F28C28",
+      },
+      "navy & brass": {
+        bg: "#F6F3EA",
+        fg: "#0B1B3A",
+        muted: "#5C5A52",
+        accent: "#B08D3A",
+      },
+      "pine & cream": {
+        bg: "#FBF7ED",
+        fg: "#10221B",
+        muted: "#5C6A62",
+        accent: "#1E6B4E",
+      },
+      "teal & coral": {
+        bg: "#F3FBFA",
+        fg: "#0E1A1A",
+        muted: "#4E6766",
+        accent: "#0B7285",
+        accent2: "#FF6B6B",
+      },
+      "graphite & sky": {
+        bg: "#F6F8FB",
+        fg: "#1B1F24",
+        muted: "#66707A",
+        accent: "#3B82F6",
+      },
+    };
+
+    const chosenPalette =
+      paletteHints[palette] ??
+      ({ bg: "#F6F6F6", fg: "#111111", muted: "#666666", accent: "#2F6FED" } as const);
+
+    const presetNotes: Record<string, string> = {
+      editorial:
+        "杂志排版：大标题 + 导语 + 分区要点；留白更大；避免堆满整页列表。",
+      "modern grid": "网格对齐：2 列/3 列卡片、模块分区；对齐线清晰。",
+      "minimal swiss": "极简瑞士：少色块、强字号层级、严格对齐与间距。",
+      "corporate clean": "企业简报：标题条/分隔线/模块标题清晰，适合汇报。",
+      "data brief": "数据简报：每页 1 结论 + 证据点 + 图表占位（可用矩形区块）。",
+      "product pitch": "路演：强主张 + 3 个价值点 + 证明/落地；文案短、有冲击。",
+    };
+
+    const note = presetNotes[preset] ??
+      "自定义 preset：请把它理解为一个排版方向，并用下面的模板库选择最匹配的骨架。";
+
+    // Multi-template library: the model should pick 2-3 templates and mix.
+    // IMPORTANT: All visible text must be inside p/h1-h6/ul/ol; div must not contain bare text.
+    return [
+      "风格预设指南（请严格遵循；不要只用单一 ul 布局）：",
+      `- preset 解释：${note}`,
+      "- 目标：同一 deck 内可复用 2-3 种页面骨架；保持统一（字号/间距/网格），但不要每页都变成“标题+一个长 ul”。",
+      "- 统一 CSS 变量（每页都定义同一套，便于一致性）：",
+      "```css",
+      ":root{",
+      `  --bg:${chosenPalette.bg};`,
+      `  --fg:${chosenPalette.fg};`,
+      `  --muted:${chosenPalette.muted};`,
+      `  --accent:${chosenPalette.accent};`,
+      chosenPalette.accent2 ? `  --accent2:${chosenPalette.accent2};` : "  --accent2:var(--accent);",
+      "  --pad-x:48pt;",
+      "  --pad-top:32pt;",
+      "  --pad-bottom:48pt; /* 保证底部安全区 */",
+      "}",
+      "body{width:720pt;height:405pt;margin:0;padding:var(--pad-top) var(--pad-x) var(--pad-bottom);box-sizing:border-box;background:var(--bg);color:var(--fg);}",
+      "h1{margin:0 0 12pt 0;font-size:34pt;line-height:1.08;letter-spacing:-0.2pt;}",
+      "h2{margin:0 0 10pt 0;font-size:22pt;line-height:1.15;}",
+      "p{margin:0 0 10pt 0;font-size:18pt;line-height:1.25;}",
+      "ul,ol{margin:0;padding-left:22pt;}",
+      "li{margin:0 0 6pt 0;font-size:18pt;line-height:1.2;}",
+      ".muted{color:var(--muted);} ",
+      "```",
+      "模板库（按 preset 选择；每页选 1 个骨架，必要时微调；不要把所有正文都塞进一个 ul）：",
+      "1) Editorial Lead（适合 Editorial/Corporate）：",
+      "```html",
+      "<body>",
+      "  <div style=\"display:flex;flex-direction:column;gap:14pt;\">",
+      "    <div>",
+      "      <h1>Slide Title</h1>",
+      "      <p class=\"muted\">一句导语：用 16-22 个字概括本页观点。</p>",
+      "    </div>",
+      "    <div style=\"display:flex;gap:28pt;\">",
+      "      <div style=\"flex:1;\">",
+      "        <h2>要点</h2>",
+      "        <ul><li>短要点 1</li><li>短要点 2</li><li>短要点 3</li></ul>",
+      "      </div>",
+      "      <div style=\"width:220pt;\">",
+      "        <div style=\"height:190pt;background:#E9E3D8;border-radius:10pt;\"></div>",
+      "        <p class=\"muted\" style=\"margin-top:8pt;font-size:14pt;line-height:1.25;\">图示/案例占位（无渐变）</p>",
+      "      </div>",
+      "    </div>",
+      "  </div>",
+      "</body>",
+      "```",
+      "2) Modern Grid Cards（适合 Modern Grid/Data Brief/Product Pitch）：",
+      "```html",
+      "<body>",
+      "  <h1>Slide Title</h1>",
+      "  <div style=\"display:grid;grid-template-columns:1fr 1fr;gap:14pt;margin-top:10pt;\">",
+      "    <div style=\"background:#FFFFFF;border-radius:12pt;padding:14pt 16pt;\">",
+      "      <h2 style=\"margin-bottom:6pt;\">模块 A</h2>",
+      "      <p class=\"muted\" style=\"font-size:16pt;\">一句解释或 2 条短句。</p>",
+      "      <ul><li>要点</li><li>要点</li></ul>",
+      "    </div>",
+      "    <div style=\"background:#FFFFFF;border-radius:12pt;padding:14pt 16pt;\">",
+      "      <h2 style=\"margin-bottom:6pt;\">模块 B</h2>",
+      "      <ul><li>要点</li><li>要点</li><li>要点</li></ul>",
+      "    </div>",
+      "    <div style=\"background:#FFFFFF;border-radius:12pt;padding:14pt 16pt;\">",
+      "      <h2 style=\"margin-bottom:6pt;\">模块 C</h2>",
+      "      <p class=\"muted\" style=\"font-size:16pt;\">一句说明。</p>",
+      "    </div>",
+      "    <div style=\"background:#FFFFFF;border-radius:12pt;padding:14pt 16pt;\">",
+      "      <h2 style=\"margin-bottom:6pt;\">模块 D</h2>",
+      "      <ul><li>要点</li><li>要点</li></ul>",
+      "    </div>",
+      "  </div>",
+      "</body>",
+      "```",
+      "3) Minimal Swiss Type（适合 Minimal Swiss/Editorial）：",
+      "```html",
+      "<body>",
+      "  <div style=\"display:flex;flex-direction:column;gap:12pt;\">",
+      "    <h1 style=\"font-size:38pt;\">一句强标题</h1>",
+      "    <div style=\"height:2pt;background:var(--accent);width:64pt;\"></div>",
+      "    <p class=\"muted\" style=\"font-size:16pt;\">副标题/限定条件（短）。</p>",
+      "    <div style=\"display:grid;grid-template-columns:1fr 1fr;gap:22pt;margin-top:8pt;\">",
+      "      <div><h2>原则 1</h2><p>一句解释。</p></div>",
+      "      <div><h2>原则 2</h2><p>一句解释。</p></div>",
+      "      <div><h2>原则 3</h2><p>一句解释。</p></div>",
+      "      <div><h2>原则 4</h2><p>一句解释。</p></div>",
+      "    </div>",
+      "  </div>",
+      "</body>",
+      "```",
+      "4) Corporate Header + Sections（适合 Corporate Clean）：",
+      "```html",
+      "<body>",
+      "  <div style=\"display:flex;align-items:flex-end;justify-content:space-between;\">",
+      "    <h1 style=\"margin-bottom:0;\">Slide Title</h1>",
+      "    <p class=\"muted\" style=\"margin:0;font-size:14pt;\">日期/版本</p>",
+      "  </div>",
+      "  <div style=\"height:1pt;background:#D6D6D6;margin:10pt 0 14pt;\"></div>",
+      "  <div style=\"display:grid;grid-template-columns:1fr 1fr;gap:22pt;\">",
+      "    <div><h2>现状</h2><ul><li>要点</li><li>要点</li></ul></div>",
+      "    <div><h2>下一步</h2><ol><li>动作</li><li>动作</li></ol></div>",
+      "  </div>",
+      "</body>",
+      "```",
+      "5) Data Brief（适合 Data Brief）：",
+      "```html",
+      "<body>",
+      "  <h1>本页结论（一个句子）</h1>",
+      "  <div style=\"display:flex;gap:18pt;margin-top:8pt;\">",
+      "    <div style=\"flex:1;background:#FFFFFF;border-radius:12pt;padding:14pt 16pt;\">",
+      "      <h2 style=\"margin-bottom:6pt;\">证据</h2>",
+      "      <ul><li>数据点/事实 1（含数字）</li><li>数据点/事实 2</li><li>限制条件/口径</li></ul>",
+      "    </div>",
+      "    <div style=\"width:300pt;background:#FFFFFF;border-radius:12pt;padding:14pt 16pt;\">",
+      "      <h2 style=\"margin-bottom:8pt;\">图表占位</h2>",
+      "      <div style=\"height:190pt;background:#E9EEF8;border-radius:10pt;\"></div>",
+      "      <p class=\"muted\" style=\"margin-top:8pt;font-size:14pt;\">图注/口径</p>",
+      "    </div>",
+      "  </div>",
+      "</body>",
+      "```",
+      "6) Product Pitch（适合 Product Pitch）：",
+      "```html",
+      "<body>",
+      "  <h1 style=\"font-size:40pt;\">我们要解决的关键问题</h1>",
+      "  <p class=\"muted\" style=\"font-size:16pt;\">一句话定位：面向谁，解决什么，带来什么结果。</p>",
+      "  <div style=\"display:grid;grid-template-columns:1fr 1fr 1fr;gap:12pt;margin-top:14pt;\">",
+      "    <div style=\"background:#FFFFFF;border-radius:12pt;padding:12pt 12pt;\"><h2 style=\"font-size:18pt;\">价值 1</h2><p class=\"muted\" style=\"font-size:14pt;\">一句解释</p></div>",
+      "    <div style=\"background:#FFFFFF;border-radius:12pt;padding:12pt 12pt;\"><h2 style=\"font-size:18pt;\">价值 2</h2><p class=\"muted\" style=\"font-size:14pt;\">一句解释</p></div>",
+      "    <div style=\"background:#FFFFFF;border-radius:12pt;padding:12pt 12pt;\"><h2 style=\"font-size:18pt;\">价值 3</h2><p class=\"muted\" style=\"font-size:14pt;\">一句解释</p></div>",
+      "  </div>",
+      "  <div style=\"margin-top:12pt;\"><h2>证明/落地</h2><ul><li>证据点</li><li>落地动作</li></ul></div>",
+      "</body>",
+      "```",
+    ].join("\n");
+  }
+
   const instruction = [
     "你是一个 PPT 生成助手。你可以使用 shell/文件工具在当前工作区内创建文件并运行脚本。",
     "目标：基于已存在的大纲文件生成每一页的 HTML slide（仅生成 HTML，不需要生成 PPTX）。",
@@ -173,6 +380,8 @@ function buildDeckInstruction(
     slideCount ? `页数：${slideCount}` : "页数：与大纲一致（由大纲决定）",
     `风格预设：${stylePreset}`,
     `配色方案：${palette}`,
+    "",
+    buildStylePresetGuide(stylePreset, palette),
     "",
     "强制输入/输出路径（必须严格一致）：",
     `- 大纲输入：${outlinePath}`,
@@ -185,12 +394,6 @@ function buildDeckInstruction(
     "- div 内不要出现裸文本（比如直接写 Notes: ...）；必须用 p/h1-h6/ul/ol 包裹。",
     "- 不要输出 Notes: 行（避免触发校验问题）。",
     "- 内容必须留出底部至少 0.5 英寸（约 36pt）空白，避免文字贴底或溢出。",
-    "",
-    "推荐模板（每页都复用这套排版，避免溢出/校验失败）：",
-    "- body: width:720pt; height:405pt; padding:32pt 48pt 48pt; box-sizing:border-box;",
-    "- h1: margin:0 0 14pt 0; font-size:34pt; line-height:1.1;",
-    "- ul: margin:0; padding-left:22pt;",
-    "- li: margin:0 0 6pt 0; font-size:18pt; line-height:1.2;",
     "",
     "执行步骤（按顺序执行，全部成功后再回复 DONE）：",
     slideCount
@@ -289,6 +492,105 @@ async function validateHtmlSlides(slidesDir: string) {
         : String(e);
     throw new Error(`HTML 溢出/尺寸校验失败：${hint}`);
   }
+}
+
+async function hashSlides(absSlidesDir: string, slideNames: string[]) {
+  const out = new Map<string, string>();
+  for (const name of slideNames) {
+    if (!/\.html$/i.test(name)) continue;
+    try {
+      out.set(name, await hashFile(path.join(absSlidesDir, name)));
+    } catch {
+      // ignore
+    }
+  }
+  return out;
+}
+
+async function validateAndAutoFixHtmlSlides(opts: {
+  jobId: string;
+  input: PptJobInput;
+  client: Awaited<ReturnType<typeof getOpencodeHandle>>["client"];
+  sessionId: string;
+  slidesDir: string; // workspace-relative
+  expectedSlideCount: number;
+  maxFixAttempts: number;
+  mode: "preview" | "pptx";
+}) {
+  const {
+    jobId,
+    input,
+    client,
+    sessionId,
+    slidesDir,
+    expectedSlideCount,
+    maxFixAttempts,
+    mode,
+  } = opts;
+
+  const absSlidesDir = path.join(process.cwd(), slidesDir);
+  let lastErr = "";
+
+  for (let fixAttempt = 0; fixAttempt <= maxFixAttempts; fixAttempt++) {
+    try {
+      await validateHtmlSlides(slidesDir);
+      if (fixAttempt > 0) {
+        log(jobId, `HTML 校验通过（已自动修复 ${fixAttempt} 次）。`);
+      } else {
+        log(jobId, "HTML 校验通过。");
+      }
+      return { ok: true as const, fixed: fixAttempt };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      lastErr = msg;
+
+      if (fixAttempt >= maxFixAttempts) {
+        return { ok: false as const, fixed: fixAttempt, error: lastErr };
+      }
+
+      const nth = fixAttempt + 1;
+      log(jobId, `HTML 校验失败，尝试修复（第 ${nth}/${maxFixAttempts} 次）：${msg}`);
+
+      const beforeSlides = await listHtmlSlides(absSlidesDir);
+      const beforeHashes = await hashSlides(absSlidesDir, beforeSlides);
+
+      const fixInstruction = buildHtmlFixInstruction(slidesDir, msg);
+      try {
+        await client.session.prompt({
+          path: { id: sessionId },
+          body: {
+            parts: [{ type: "text", text: fixInstruction }],
+            model: getModelOverride(input),
+          },
+        });
+      } catch (fixErr) {
+        const fm = fixErr instanceof Error ? fixErr.message : String(fixErr);
+        log(jobId, `修复 HTML 的 LLM 请求失败：${fm}`);
+      }
+
+      await ensureExpectedSlides(jobId, slidesDir, expectedSlideCount);
+
+      // Snapshot versions for any changed slides (best-effort).
+      try {
+        const afterSlides = await listHtmlSlides(absSlidesDir);
+        const afterHashes = await hashSlides(absSlidesDir, afterSlides);
+        const changed: string[] = [];
+        for (const name of afterSlides) {
+          const b = beforeHashes.get(name);
+          const a = afterHashes.get(name);
+          if (b && a && b !== a) changed.push(name);
+        }
+        if (changed.length > 0) {
+          await snapshotSlideVersions(jobId, changed, `auto-fix(${mode}) #${nth}`);
+          log(jobId, `已创建版本（auto-fix）：${changed.join(", ")}`);
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return { ok: false as const, fixed: maxFixAttempts, error: lastErr || "unknown" };
 }
 
 function listHtmlSlides(absSlidesDir: string) {
@@ -519,7 +821,8 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
 
     // Validate HTML first (overflow / body size), then try building locally.
     // If validation/build fails, ask LLM to fix the HTML and retry.
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    const maxFixes = 5;
+    for (let fixed = 0; fixed <= maxFixes; fixed++) {
       try {
         await validateHtmlSlides(slidesDir);
         await buildDeck(jobId, input, slidesDir, pptxPath);
@@ -529,11 +832,12 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
         break;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        if (attempt >= 2) {
+        if (fixed >= maxFixes) {
           throw e;
         }
 
-        log(jobId, `本地构建失败，尝试修复 HTML（第 ${attempt} 次）：${msg}`);
+        const nth = fixed + 1;
+        log(jobId, `本地构建失败，尝试修复 HTML（第 ${nth}/${maxFixes} 次）：${msg}`);
         const fixInstruction = buildHtmlFixInstruction(slidesDir, msg);
         try {
           await client.session.prompt({
@@ -632,27 +936,34 @@ export async function runHtmlOnlyJob(jobId: string, input: PptJobInput) {
     await ensureExpectedSlides(jobId, slidesDir, effectiveSlideCount);
 
     // Validate overflow / body size right after HTML generation.
-    // If it fails, ask LLM to fix once, then re-validate.
-    try {
-      await validateHtmlSlides(slidesDir);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      log(jobId, `HTML 校验失败，尝试修复：${msg}`);
-      const fixInstruction = buildHtmlFixInstruction(slidesDir, msg);
-      try {
-        await client.session.prompt({
-          path: { id: sessionId },
-          body: {
-            parts: [{ type: "text", text: fixInstruction }],
-            model: getModelOverride(input),
-          },
-        });
-      } catch (fixErr) {
-        const fm = fixErr instanceof Error ? fixErr.message : String(fixErr);
-        log(jobId, `修复 HTML 的 LLM 请求失败：${fm}`);
-      }
-      await ensureExpectedSlides(jobId, slidesDir, effectiveSlideCount);
-      await validateHtmlSlides(slidesDir);
+    // Preview mode should keep going even if validation cannot be fully fixed,
+    // so the user can still preview and adjust.
+    const fixRes = await validateAndAutoFixHtmlSlides({
+      jobId,
+      input,
+      client,
+      sessionId,
+      slidesDir,
+      expectedSlideCount: effectiveSlideCount,
+      maxFixAttempts: 3,
+      mode: "preview",
+    });
+    if (!fixRes.ok) {
+      setJob(jobId, {
+        error:
+          `HTML 仍存在校验问题（已自动修复 ${fixRes.fixed} 次）。` +
+          `你仍可预览/手动调整，随后再渲染 PPTX。\n` +
+          `${fixRes.error}`,
+      });
+      pushEvent(jobId, {
+        type: "error",
+        message:
+          `HTML 校验未完全通过（已自动修复 ${fixRes.fixed} 次，预览模式继续）。\n${fixRes.error}`,
+        ts: now(),
+      });
+    } else {
+      // Clear any previous error once validation passes.
+      setJob(jobId, { error: undefined });
     }
 
     setStatus2(jobId, "done");
@@ -708,7 +1019,8 @@ export async function runRenderFromHtmlJob(jobId: string, input: PptJobInput) {
       log(jobId, `检测到 HTML slides：${files.length} 个`);
     }
 
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    const maxFixes = 5;
+    for (let fixed = 0; fixed <= maxFixes; fixed++) {
       try {
         await buildDeck(jobId, input, slidesDir, pptxPath);
         setJob(jobId, { pptxPath, thumbnailsPath: undefined });
@@ -717,9 +1029,10 @@ export async function runRenderFromHtmlJob(jobId: string, input: PptJobInput) {
         log(jobId, "PPTX 生成完成。");
         return;
       } catch (e) {
-        if (attempt >= 2) throw e;
+        if (fixed >= maxFixes) throw e;
         const msg = e instanceof Error ? e.message : String(e);
-        log(jobId, `本地构建失败，尝试修复 HTML（第 ${attempt} 次）：${msg}`);
+        const nth = fixed + 1;
+        log(jobId, `本地构建失败，尝试修复 HTML（第 ${nth}/${maxFixes} 次）：${msg}`);
         const fixInstruction = buildHtmlFixInstruction(slidesDir, msg);
         try {
           await client.session.prompt({
@@ -732,6 +1045,10 @@ export async function runRenderFromHtmlJob(jobId: string, input: PptJobInput) {
         } catch (fixErr) {
           const fm = fixErr instanceof Error ? fixErr.message : String(fixErr);
           log(jobId, `修复 HTML 的 LLM 请求失败：${fm}`);
+        }
+
+        if (expected) {
+          await ensureExpectedSlides(jobId, slidesDir, expected);
         }
       }
     }

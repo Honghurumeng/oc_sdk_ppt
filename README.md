@@ -63,6 +63,16 @@ Web 后端会用该密码以 HTTP Basic 的方式访问 opencode server：
 - `GET /api/ppt/jobs/:jobId/pptx` -> 下载 pptx
 - `GET /api/ppt/jobs/:jobId/thumbnails` -> 预览缩略图
 
+## 任务恢复与 LLM 会话（sessionId）
+
+每个 PPT 任务会创建 opencode session，并把 `sessionId` 持久化到
+`workspace/jobs/<jobId>/job.json`。这意味着：
+
+- 点击“使用该大纲生成 PPT”（approve）时，后端会清空旧的 `sessionId`，并在新的 session 中进行 PPT/HTML slides 生成与自动修复。
+- 同一次生成流程内（生成 -> 校验 -> 多轮修复 -> 渲染/调整），默认都会复用同一个 `sessionId`，让 LLM 能延续上下文。
+- 在页面里使用“继续之前的任务”加载旧任务后，只要该任务的 `job.json` 里存在 `sessionId`，继续调整/渲染会接着之前的会话继续。
+- 只有当 `sessionId` 缺失（例如旧任务未写入、状态文件损坏/被清理）时，后端才会为该 job 创建新的 session。
+
 ## LLM 配置
 
 页面右上角导航栏（Nav）提供入口：点击 "LLM 配置" 打开对话框（Dialog）。默认不显示。

@@ -40,6 +40,10 @@ export async function GET(
           // 让前端尽快刷新 job 状态
           send("flush", { ts: Date.now() });
         }
+        if (evt.type === "status" && (evt.status === "done" || evt.status === "awaiting_approval")) {
+          // status 事件本身不包含 job.error/pptxUrl 等完整信息，主动触发前端刷新。
+          send("flush", { ts: Date.now() });
+        }
       });
 
       // 初始快照：即使前端在订阅前错过事件，也能拿到当前状态/结果

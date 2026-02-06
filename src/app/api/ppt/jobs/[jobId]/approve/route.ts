@@ -67,6 +67,10 @@ export async function POST(
 
   setJob(jobId, { input: nextInput, error: undefined });
 
+  // When the user clicks "use this outline to generate", start a fresh LLM session
+  // for deck generation (do not reuse the outline session context).
+  setJob(jobId, { sessionId: undefined });
+
   // Mark queued immediately so UI can reflect the transition even if the
   // background task starts slightly later.
   setJob(jobId, { status: "queued", error: undefined });
