@@ -31,6 +31,7 @@ type PptJobInput = {
   stylePreset?: string;
   palette?: string;
   model?: string;
+  svgModel?: string;
 };
 
 type JobResponse = {
@@ -121,6 +122,7 @@ export default function PptJobForm() {
   const [stylePreset, setStylePreset] = useState("Editorial");
   const [palette, setPalette] = useState("Sand & Ink");
   const [model, setModel] = useState<string>("");
+  const [svgModel, setSvgModel] = useState<string>("");
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
 
@@ -147,6 +149,7 @@ export default function PptJobForm() {
   const [adjustTarget, setAdjustTarget] = useState<string>("all");
   const [adjustFeedback, setAdjustFeedback] = useState<string>("");
   const [isAdjusting, setIsAdjusting] = useState(false);
+  const [isAdjustingImages, setIsAdjustingImages] = useState(false);
   const [pendingSlidesReload, setPendingSlidesReload] = useState(false);
   const [previewScale, setPreviewScale] = useState(1);
   const previewHostRef = useRef<HTMLDivElement | null>(null);
@@ -180,14 +183,20 @@ export default function PptJobForm() {
       setModelOptions(list as string[]);
       if (list.length === 0) {
         setModel("");
+        setSvgModel("");
         return;
       }
-      if (!model || !list.includes(model)) {
-        setModel(String(list[0]));
-      }
+
+      const first = String(list[0]);
+      const nextModel = !model || !list.includes(model) ? first : model;
+      const nextSvgModel = !svgModel || !list.includes(svgModel) ? nextModel : svgModel;
+
+      if (nextModel !== model) setModel(nextModel);
+      if (nextSvgModel !== svgModel) setSvgModel(nextSvgModel);
     } catch (e) {
       setModelOptions([]);
       setModel("");
+      setSvgModel("");
       setModelLoadError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -330,6 +339,12 @@ export default function PptJobForm() {
       if (typeof data.input.model === "string") {
         setModel(data.input.model);
       }
+      if (typeof data.input.svgModel === "string") {
+        setSvgModel(data.input.svgModel);
+      } else if (typeof data.input.model === "string") {
+        // Back-compat: older jobs don't have svgModel, default to the main model.
+        setSvgModel(data.input.model);
+      }
     }
 
     setStatus(data.status);
@@ -423,6 +438,7 @@ export default function PptJobForm() {
         stylePreset,
         palette,
         model: model || undefined,
+        svgModel: svgModel || undefined,
       }),
     });
 
@@ -459,6 +475,7 @@ export default function PptJobForm() {
         stylePreset,
         palette,
         model: model || undefined,
+        svgModel: svgModel || undefined,
         buildMode: previewHtml ? "preview" : "pptx",
       }),
     });
@@ -534,7 +551,10 @@ export default function PptJobForm() {
     const res = await fetch(`/api/ppt/jobs/${jobId}/render`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: model || undefined }),
+      body: JSON.stringify({
+        model: model || undefined,
+        svgModel: svgModel || undefined,
+      }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -542,6 +562,47 @@ export default function PptJobForm() {
       return;
     }
     await refreshJob(jobId);
+  }
+
+  async function adjustImages() {
+    if (!jobId) return;
+    if (!adjustFeedback.trim()) return;
+    setIsAdjustingImages(true);
+    setError(null);
+    try {
+      if (adjustTarget !== "all") {
+        const htmlRes = await fetch(
+          `/api/ppt/jobs/${jobId}/files/slides/${encodeURIComponent(adjustTarget)}`,
+          { cache: "no-store" }
+        );
+        const html = htmlRes.ok ? await htmlRes.text() : "";
+        if (!/data-oc-illust-slot\s*=/i.test(html)) {
+          setError("该页面没有图片槽位，无法进行图片应用调整。");
+          return;
+        }
+      }
+
+      const res = await fetch(`/api/ppt/jobs/${jobId}/slides/adjust-images`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: adjustTarget,
+          feedback: adjustFeedback,
+          model: model || undefined,
+          svgModel: svgModel || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data?.error ?? "调整图片失败");
+        return;
+      }
+      // 后台异步调整：等状态回到 done 再刷新（避免读到旧资源）
+      setPendingSlidesReload(true);
+      await refreshJob(jobId);
+    } finally {
+      setIsAdjustingImages(false);
+    }
   }
 
   async function adjustHtml() {
@@ -557,6 +618,7 @@ export default function PptJobForm() {
           target: adjustTarget,
           feedback: adjustFeedback,
           model: model || undefined,
+          svgModel: svgModel || undefined,
         }),
       });
       if (!res.ok) {
@@ -997,6 +1059,29 @@ export default function PptJobForm() {
             ) : null}
           </FormControl>
 
+          <FormControl fullWidth size="small" disabled={modelOptions.length === 0}>
+            <InputLabel id="svg-model-select-label">SVG 插图模型（provider/model）</InputLabel>
+            <Select
+              labelId="svg-model-select-label"
+              label="SVG 插图模型（provider/model）"
+              value={svgModel}
+              onChange={(e) => setSvgModel(String(e.target.value))}
+            >
+              {modelOptions.length === 0 ? (
+                <MenuItem value="">(暂无模型)</MenuItem>
+              ) : (
+                modelOptions.map((m) => (
+                  <MenuItem key={m} value={m}>
+                    {m}
+                  </MenuItem>
+                ))
+              )}
+            </Select>
+            <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5 }}>
+              用于生成 slides 中的 SVG/PNG 插图（会在独立 session 中执行，避免污染主会话上下文）。
+            </Typography>
+          </FormControl>
+
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
             <Button
               variant="contained"
@@ -1140,6 +1225,14 @@ export default function PptJobForm() {
                     >
                       刷新 slides
                     </Button>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      onClick={renderFromHtml}
+                      disabled={isJobBusy}
+                    >
+                      用当前 HTML 渲染 PPTX
+                    </Button>
                   </Stack>
                 </Stack>
 
@@ -1180,16 +1273,21 @@ export default function PptJobForm() {
               />
 
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
-                <Button size="small" variant="contained" onClick={renderFromHtml} disabled={isJobBusy}>
-                  用当前 HTML 渲染 PPTX
-                </Button>
                 <Button
                   size="small"
                   variant="outlined"
                   onClick={adjustHtml}
-                  disabled={isAdjusting || !adjustFeedback.trim() || isJobBusy}
+                  disabled={isAdjusting || isAdjustingImages || !adjustFeedback.trim() || isJobBusy}
                 >
-                  应用调整
+                  页面应用调整
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={adjustImages}
+                  disabled={isAdjustingImages || isAdjusting || !adjustFeedback.trim() || isJobBusy}
+                >
+                  图片应用调整
                 </Button>
               </Stack>
 

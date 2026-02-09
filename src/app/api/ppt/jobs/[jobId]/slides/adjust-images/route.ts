@@ -1,12 +1,19 @@
 import { NextResponse } from "next/server";
+import path from "node:path";
+import { promises as fs } from "node:fs";
+
 import { getJob, setJob, type PptJobInput } from "@/lib/jobStore";
-import { runHtmlAdjustJob } from "@/lib/runJob";
+import { runSvgAdjustJob } from "@/lib/runJob";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function isSafeId(id: string) {
   return /^[a-z0-9]+$/i.test(id);
+}
+
+function hasIllustSlot(html: string) {
+  return /data-oc-illust-slot\s*=/i.test(html);
 }
 
 export async function POST(
@@ -41,6 +48,26 @@ export async function POST(
   const targetRaw = typeof obj.target === "string" ? obj.target : "all";
   const target = targetRaw.trim() ? targetRaw.trim() : "all";
   const feedback = typeof obj.feedback === "string" ? obj.feedback : "";
+  if (!feedback.trim()) {
+    return NextResponse.json({ error: "缺少修改意见" }, { status: 400 });
+  }
+
+  if (target !== "all") {
+    const normalized = path.posix.basename(target);
+    if (!/\.html$/i.test(normalized)) {
+      return NextResponse.json({ error: "target 必须是 .html 文件名或 all" }, { status: 400 });
+    }
+    const absHtml = path.join(process.cwd(), "workspace", "jobs", jobId, "slides", normalized);
+    let html = "";
+    try {
+      html = await fs.readFile(absHtml, "utf-8");
+    } catch {
+      return NextResponse.json({ error: `目标 HTML 不存在：${normalized}` }, { status: 404 });
+    }
+    if (!hasIllustSlot(html)) {
+      return NextResponse.json({ error: "该页面没有图片槽位，无法进行图片应用调整。" }, { status: 400 });
+    }
+  }
 
   const nextInput: PptJobInput = {
     ...job.input,
@@ -52,7 +79,7 @@ export async function POST(
 
   setImmediate(() => {
     try {
-      void runHtmlAdjustJob(jobId, nextInput, target === "all" ? "all" : target, feedback);
+      void runSvgAdjustJob(jobId, nextInput, target === "all" ? "all" : target, feedback);
     } catch {
       // ignore
     }
@@ -60,3 +87,4 @@ export async function POST(
 
   return NextResponse.json({ ok: true });
 }
+

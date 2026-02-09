@@ -19,6 +19,7 @@ export type PptJobInput = {
   stylePreset?: string;
   palette?: string;
   model?: string; // provider/model
+  svgModel?: string; // provider/model (used for SVG illustration generation)
 };
 
 export type PptJobEvent =

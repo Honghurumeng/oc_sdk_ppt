@@ -52,6 +52,7 @@ export async function POST(
       typeof obj.stylePreset === "string" ? obj.stylePreset : job.input.stylePreset,
     palette: typeof obj.palette === "string" ? obj.palette : job.input.palette,
     model: typeof obj.model === "string" ? obj.model : job.input.model,
+    svgModel: typeof obj.svgModel === "string" ? obj.svgModel : job.input.svgModel,
   };
 
   const buildModeRaw = typeof obj.buildMode === "string" ? obj.buildMode : "pptx";
