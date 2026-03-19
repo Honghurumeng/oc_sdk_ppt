@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type HTMLAttributes } from "react";
 
 import Alert from "@mui/material/Alert";
 import Autocomplete from "@mui/material/Autocomplete";
@@ -31,7 +31,6 @@ type PptJobInput = {
   stylePreset?: string;
   palette?: string;
   model?: string;
-  svgModel?: string;
 };
 
 type JobResponse = {
@@ -42,9 +41,13 @@ type JobResponse = {
   error: string | null;
   logs: { ts: number; message: string }[];
   outlineMarkdown?: string | null;
+  draftOutlineMarkdown?: string | null;
+  refinedOutlineMarkdown?: string | null;
   pptxUrl: string | null;
   thumbnailsUrl?: string | null;
 };
+
+type OutlineVersionChoice = "draft" | "refined" | "custom";
 
 type JobSummary = {
   id: string;
@@ -109,6 +112,15 @@ function findOption(options: LabeledOption[], value: string) {
   return options.find((o) => o.label.toLowerCase() === v.toLowerCase()) ?? null;
 }
 
+function isLabeledOption(value: unknown): value is LabeledOption {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { label?: unknown }).label === "string" &&
+    typeof (value as { description?: unknown }).description === "string"
+  );
+}
+
 const monoFontFamily =
   "var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
 
@@ -122,7 +134,6 @@ export default function PptJobForm() {
   const [stylePreset, setStylePreset] = useState("Editorial");
   const [palette, setPalette] = useState("Sand & Ink");
   const [model, setModel] = useState<string>("");
-  const [svgModel, setSvgModel] = useState<string>("");
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
 
@@ -139,6 +150,10 @@ export default function PptJobForm() {
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<{ ts: number; message: string }[]>([]);
   const [outlineMarkdown, setOutlineMarkdown] = useState<string>("");
+  const [draftOutlineMarkdown, setDraftOutlineMarkdown] = useState<string>("");
+  const [refinedOutlineMarkdown, setRefinedOutlineMarkdown] = useState<string>("");
+  const [outlineVersionChoice, setOutlineVersionChoice] =
+    useState<OutlineVersionChoice>("refined");
   const [pptxUrl, setPptxUrl] = useState<string | null>(null);
 
   const [previewHtml, setPreviewHtml] = useState(false);
@@ -149,7 +164,6 @@ export default function PptJobForm() {
   const [adjustTarget, setAdjustTarget] = useState<string>("all");
   const [adjustFeedback, setAdjustFeedback] = useState<string>("");
   const [isAdjusting, setIsAdjusting] = useState(false);
-  const [isAdjustingImages, setIsAdjustingImages] = useState(false);
   const [pendingSlidesReload, setPendingSlidesReload] = useState(false);
   const [previewScale, setPreviewScale] = useState(1);
   const previewHostRef = useRef<HTMLDivElement | null>(null);
@@ -169,6 +183,60 @@ export default function PptJobForm() {
 
   const isJobBusy = status === "queued" || status === "running";
 
+  function pickOutlineVersion(choice: OutlineVersionChoice) {
+    if (choice === "draft" && draftOutlineMarkdown) {
+      setOutlineMarkdown(draftOutlineMarkdown);
+      setOutlineVersionChoice("draft");
+      return;
+    }
+    if (choice === "refined" && refinedOutlineMarkdown) {
+      setOutlineMarkdown(refinedOutlineMarkdown);
+      setOutlineVersionChoice("refined");
+      return;
+    }
+    setOutlineVersionChoice("custom");
+  }
+
+  function syncOutlineStateFromJob(data: JobResponse) {
+    const draft =
+      typeof data.draftOutlineMarkdown === "string" ? data.draftOutlineMarkdown : "";
+    const refined =
+      typeof data.refinedOutlineMarkdown === "string" ? data.refinedOutlineMarkdown : "";
+    const current = typeof data.outlineMarkdown === "string" ? data.outlineMarkdown : "";
+
+    setDraftOutlineMarkdown(draft);
+    setRefinedOutlineMarkdown(refined);
+
+    if (outlineVersionChoice === "custom") {
+      if (!outlineMarkdown && current) setOutlineMarkdown(current);
+      return;
+    }
+
+    if (outlineVersionChoice === "draft" && draft) {
+      setOutlineMarkdown(draft);
+      return;
+    }
+
+    if (outlineVersionChoice === "refined" && refined) {
+      setOutlineMarkdown(refined);
+      return;
+    }
+
+    if (refined) {
+      setOutlineVersionChoice("refined");
+      setOutlineMarkdown(refined);
+      return;
+    }
+
+    if (draft) {
+      setOutlineVersionChoice("draft");
+      setOutlineMarkdown(draft);
+      return;
+    }
+
+    setOutlineMarkdown(current);
+  }
+
   async function loadModelOptions() {
     try {
       setModelLoadError(null);
@@ -183,20 +251,16 @@ export default function PptJobForm() {
       setModelOptions(list as string[]);
       if (list.length === 0) {
         setModel("");
-        setSvgModel("");
         return;
       }
 
       const first = String(list[0]);
       const nextModel = !model || !list.includes(model) ? first : model;
-      const nextSvgModel = !svgModel || !list.includes(svgModel) ? nextModel : svgModel;
 
       if (nextModel !== model) setModel(nextModel);
-      if (nextSvgModel !== svgModel) setSvgModel(nextSvgModel);
     } catch (e) {
       setModelOptions([]);
       setModel("");
-      setSvgModel("");
       setModelLoadError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -273,9 +337,7 @@ export default function PptJobForm() {
     es.addEventListener("outline", (ev) => {
       try {
         const payload = JSON.parse((ev as MessageEvent).data);
-        if (typeof payload.outlineMarkdown === "string") {
-          setOutlineMarkdown(payload.outlineMarkdown);
-        }
+        syncOutlineStateFromJob(payload as JobResponse);
       } catch {
         // ignore
       }
@@ -339,12 +401,6 @@ export default function PptJobForm() {
       if (typeof data.input.model === "string") {
         setModel(data.input.model);
       }
-      if (typeof data.input.svgModel === "string") {
-        setSvgModel(data.input.svgModel);
-      } else if (typeof data.input.model === "string") {
-        // Back-compat: older jobs don't have svgModel, default to the main model.
-        setSvgModel(data.input.model);
-      }
     }
 
     setStatus(data.status);
@@ -353,7 +409,7 @@ export default function PptJobForm() {
     const nextLogs = data.logs ?? [];
     setLogs(nextLogs);
     seenLogRef.current = new Set(nextLogs.map((l) => `${l.ts}|${l.message}`));
-    if (typeof data.outlineMarkdown === "string") setOutlineMarkdown(data.outlineMarkdown);
+    syncOutlineStateFromJob(data);
     setPptxUrl(data.pptxUrl);
 
     if (data.status === "queued" || data.status === "running") {
@@ -396,6 +452,9 @@ export default function PptJobForm() {
     setPptxUrl(null);
     setLogs([]);
     setOutlineMarkdown("");
+    setDraftOutlineMarkdown("");
+    setRefinedOutlineMarkdown("");
+    setOutlineVersionChoice("refined");
     seenLogRef.current = new Set();
 
     stopPolling();
@@ -418,6 +477,9 @@ export default function PptJobForm() {
     setError(null);
     setLogs([]);
     setOutlineMarkdown("");
+    setDraftOutlineMarkdown("");
+    setRefinedOutlineMarkdown("");
+    setOutlineVersionChoice("refined");
     setPptxUrl(null);
     seenLogRef.current = new Set();
     setShowHtmlPreview(false);
@@ -438,7 +500,6 @@ export default function PptJobForm() {
         stylePreset,
         palette,
         model: model || undefined,
-        svgModel: svgModel || undefined,
       }),
     });
 
@@ -475,7 +536,6 @@ export default function PptJobForm() {
         stylePreset,
         palette,
         model: model || undefined,
-        svgModel: svgModel || undefined,
         buildMode: previewHtml ? "preview" : "pptx",
       }),
     });
@@ -553,7 +613,6 @@ export default function PptJobForm() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: model || undefined,
-        svgModel: svgModel || undefined,
       }),
     });
     if (!res.ok) {
@@ -562,47 +621,6 @@ export default function PptJobForm() {
       return;
     }
     await refreshJob(jobId);
-  }
-
-  async function adjustImages() {
-    if (!jobId) return;
-    if (!adjustFeedback.trim()) return;
-    setIsAdjustingImages(true);
-    setError(null);
-    try {
-      if (adjustTarget !== "all") {
-        const htmlRes = await fetch(
-          `/api/ppt/jobs/${jobId}/files/slides/${encodeURIComponent(adjustTarget)}`,
-          { cache: "no-store" }
-        );
-        const html = htmlRes.ok ? await htmlRes.text() : "";
-        if (!/data-oc-illust-slot\s*=/i.test(html)) {
-          setError("该页面没有图片槽位，无法进行图片应用调整。");
-          return;
-        }
-      }
-
-      const res = await fetch(`/api/ppt/jobs/${jobId}/slides/adjust-images`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          target: adjustTarget,
-          feedback: adjustFeedback,
-          model: model || undefined,
-          svgModel: svgModel || undefined,
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data?.error ?? "调整图片失败");
-        return;
-      }
-      // 后台异步调整：等状态回到 done 再刷新（避免读到旧资源）
-      setPendingSlidesReload(true);
-      await refreshJob(jobId);
-    } finally {
-      setIsAdjustingImages(false);
-    }
   }
 
   async function adjustHtml() {
@@ -618,7 +636,6 @@ export default function PptJobForm() {
           target: adjustTarget,
           feedback: adjustFeedback,
           model: model || undefined,
-          svgModel: svgModel || undefined,
         }),
       });
       if (!res.ok) {
@@ -926,8 +943,8 @@ export default function PptJobForm() {
                   setStylePreset(v);
                   return;
                 }
-                if (v && typeof (v as any).label === "string") {
-                  setStylePreset(String((v as LabeledOption).label));
+                if (isLabeledOption(v)) {
+                  setStylePreset(v.label);
                   return;
                 }
               }}
@@ -942,9 +959,10 @@ export default function PptJobForm() {
               renderOption={(props, opt) => {
                 // MUI passes a `key` inside the props object; React requires `key` to be
                 // passed explicitly rather than via spread.
-                const { key, ...rest } = props as unknown as Record<string, unknown>;
+                const key = "key" in props ? String(props.key) : opt.label;
+                const rest = props as HTMLAttributes<HTMLLIElement>;
                 return (
-                  <Box component="li" key={String(key ?? opt.label)} {...(rest as any)}>
+                  <Box component="li" key={key} {...rest}>
                     <Box sx={{ minWidth: 0 }}>
                       <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
                         {opt.label}
@@ -984,8 +1002,8 @@ export default function PptJobForm() {
                   setPalette(v);
                   return;
                 }
-                if (v && typeof (v as any).label === "string") {
-                  setPalette(String((v as LabeledOption).label));
+                if (isLabeledOption(v)) {
+                  setPalette(v.label);
                   return;
                 }
               }}
@@ -998,9 +1016,10 @@ export default function PptJobForm() {
                 return a.toLowerCase() === b.toLowerCase();
               }}
               renderOption={(props, opt) => {
-                const { key, ...rest } = props as unknown as Record<string, unknown>;
+                const key = "key" in props ? String(props.key) : opt.label;
+                const rest = props as HTMLAttributes<HTMLLIElement>;
                 return (
-                  <Box component="li" key={String(key ?? opt.label)} {...(rest as any)}>
+                  <Box component="li" key={key} {...rest}>
                     <Box sx={{ minWidth: 0 }}>
                       <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
                         {opt.label}
@@ -1059,29 +1078,6 @@ export default function PptJobForm() {
             ) : null}
           </FormControl>
 
-          <FormControl fullWidth size="small" disabled={modelOptions.length === 0}>
-            <InputLabel id="svg-model-select-label">SVG 插图模型（provider/model）</InputLabel>
-            <Select
-              labelId="svg-model-select-label"
-              label="SVG 插图模型（provider/model）"
-              value={svgModel}
-              onChange={(e) => setSvgModel(String(e.target.value))}
-            >
-              {modelOptions.length === 0 ? (
-                <MenuItem value="">(暂无模型)</MenuItem>
-              ) : (
-                modelOptions.map((m) => (
-                  <MenuItem key={m} value={m}>
-                    {m}
-                  </MenuItem>
-                ))
-              )}
-            </Select>
-            <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5 }}>
-              用于生成 slides 中的 SVG/PNG 插图（会在独立 session 中执行，避免污染主会话上下文）。
-            </Typography>
-          </FormControl>
-
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
             <Button
               variant="contained"
@@ -1134,9 +1130,12 @@ export default function PptJobForm() {
           {jobId && outlineMarkdown ? (
             <Stack spacing={1}>
               <TextField
-                label="大纲（可编辑）"
+                label="大纲（可编辑，默认显示精修版）"
                 value={outlineMarkdown}
-                onChange={(e) => setOutlineMarkdown(e.target.value)}
+                onChange={(e) => {
+                  setOutlineMarkdown(e.target.value);
+                  setOutlineVersionChoice("custom");
+                }}
                 multiline
                 minRows={12}
                 fullWidth
@@ -1148,6 +1147,26 @@ export default function PptJobForm() {
                   },
                 }}
               />
+              {draftOutlineMarkdown || refinedOutlineMarkdown ? (
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
+                  <FormControl size="small" sx={{ minWidth: 220 }}>
+                    <InputLabel id="outline-version-label">大纲版本</InputLabel>
+                    <Select
+                      labelId="outline-version-label"
+                      label="大纲版本"
+                      value={outlineVersionChoice}
+                      onChange={(e) => pickOutlineVersion(e.target.value as OutlineVersionChoice)}
+                    >
+                      {draftOutlineMarkdown ? <MenuItem value="draft">初稿</MenuItem> : null}
+                      {refinedOutlineMarkdown ? <MenuItem value="refined">精修版</MenuItem> : null}
+                      <MenuItem value="custom">当前编辑内容</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                    可在初稿和精修版之间切换；手动修改后会视为“当前编辑内容”。
+                  </Typography>
+                </Stack>
+              ) : null}
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
                 <Button variant="contained" onClick={approve} disabled={!jobId || isJobBusy}>
                   使用该大纲生成 PPT
@@ -1163,7 +1182,9 @@ export default function PptJobForm() {
                   label="生成 HTML 后先预览"
                 />
                 <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                  {isJobBusy ? "任务执行中：请等待完成/失败后再触发新的生成。" : "你也可以先修改大纲，再点生成。"}
+                  {isJobBusy
+                    ? "任务执行中：系统会先生成初稿，再在新会话里检查和精修大纲。"
+                    : "你也可以在精修版基础上继续手动修改，再点生成。"}
                 </Typography>
               </Stack>
             </Stack>
@@ -1277,17 +1298,9 @@ export default function PptJobForm() {
                   size="small"
                   variant="outlined"
                   onClick={adjustHtml}
-                  disabled={isAdjusting || isAdjustingImages || !adjustFeedback.trim() || isJobBusy}
+                  disabled={isAdjusting || !adjustFeedback.trim() || isJobBusy}
                 >
                   页面应用调整
-                </Button>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  onClick={adjustImages}
-                  disabled={isAdjustingImages || isAdjusting || !adjustFeedback.trim() || isJobBusy}
-                >
-                  图片应用调整
                 </Button>
               </Stack>
 

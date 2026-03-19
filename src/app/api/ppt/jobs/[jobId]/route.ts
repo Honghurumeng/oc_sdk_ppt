@@ -33,6 +33,8 @@ export async function GET(
     error: job.error ?? null,
     logs: job.logs.slice(-200),
     outlineMarkdown: job.outlineMarkdown ?? null,
+    draftOutlineMarkdown: job.draftOutlineMarkdown ?? null,
+    refinedOutlineMarkdown: job.refinedOutlineMarkdown ?? null,
     pptxUrl: job.pptxPath ? `${base}/pptx` : null,
     thumbnailsUrl: job.thumbnailsPath ? `${base}/thumbnails` : null,
   });

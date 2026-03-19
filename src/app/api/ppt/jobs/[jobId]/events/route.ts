@@ -59,6 +59,8 @@ export async function GET(
         send("outline", {
           type: "outline",
           outlineMarkdown: job.outlineMarkdown,
+          draftOutlineMarkdown: job.draftOutlineMarkdown ?? null,
+          refinedOutlineMarkdown: job.refinedOutlineMarkdown ?? null,
           ts: Date.now(),
         });
       }

@@ -19,13 +19,18 @@ export type PptJobInput = {
   stylePreset?: string;
   palette?: string;
   model?: string; // provider/model
-  svgModel?: string; // provider/model (used for SVG illustration generation)
 };
 
 export type PptJobEvent =
   | { type: "log"; message: string; ts: number }
   | { type: "status"; status: PptJobStatus; ts: number }
-  | { type: "outline"; outlineMarkdown: string; ts: number }
+  | {
+      type: "outline";
+      outlineMarkdown: string;
+      draftOutlineMarkdown?: string;
+      refinedOutlineMarkdown?: string;
+      ts: number;
+    }
   | { type: "result"; pptxPath: string; thumbnailsPath?: string | null; ts: number }
   | { type: "error"; message: string; ts: number };
 
@@ -39,6 +44,8 @@ export type PptJob = {
   outputDir: string; // workspace-relative
   outlinePath?: string; // workspace-relative
   outlineMarkdown?: string;
+  draftOutlineMarkdown?: string;
+  refinedOutlineMarkdown?: string;
   pptxPath?: string; // workspace-relative
   thumbnailsPath?: string; // workspace-relative
   logs: { ts: number; message: string }[];

@@ -207,7 +207,6 @@ export async function POST(req: Request) {
     stylePreset: obj.stylePreset ? String(obj.stylePreset) : undefined,
     palette: obj.palette ? String(obj.palette) : undefined,
     model: obj.model ? String(obj.model) : undefined,
-    svgModel: obj.svgModel ? String(obj.svgModel) : undefined,
   };
 
   if (!input.topic) {

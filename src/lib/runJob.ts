@@ -4,8 +4,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { getOpencodeHandle, unwrapData } from "@/lib/opencode";
+import {
+  buildPptContentOutlineSystemPrompt,
+  buildPptDesignOutlineSystemPrompt,
+} from "@/lib/pptContentSkill";
 import { snapshotSlideVersions, ensureSlideVersionsInitialized, listHtmlSlides as listHtmlSlidesByJob } from "@/lib/slideVersions";
-import { ensureIllustrationsForSlides } from "@/lib/illustrations";
 import {
   getJob,
   pushEvent,
@@ -86,15 +89,6 @@ function getModelOverride(input: PptJobInput) {
   return undefined;
 }
 
-function getSvgModelOverride(input: PptJobInput) {
-  if (input.svgModel) {
-    const parsed = parseProviderModel(input.svgModel);
-    if (parsed) return parsed;
-  }
-  // Back-compat / convenience: default to the main model when svgModel isn't set.
-  return getModelOverride(input);
-}
-
 function buildOutlineInstruction(jobId: string, input: PptJobInput) {
   const topic = sanitizeOneLine(input.topic);
   const language = sanitizeOneLine(input.language ?? "中文");
@@ -133,11 +127,14 @@ function buildOutlineInstruction(jobId: string, input: PptJobInput) {
     `- 大纲文件：${outlinePath}`,
     "",
     "大纲格式要求：",
-    "- 输出为 Markdown，按 slide 分节，使用 ## Slide N: 标题",
+    "- 输出为 Markdown，先写全局视觉规划，再按 slide 分节",
+    "- 文件开头先输出一个“## Visual System”区块，至少包含：整体风格、配色、字体层级、页面骨架、图表策略",
+    "- 然后按 slide 分节，使用 ## Slide N: 标题",
     slideConfig.mode === "auto"
       ? "- Slide 必须从 1 连续编号到你决定的最后一页（不要跳号/重复号）"
       : "- Slide 必须从 1 连续编号到最后一页（不要跳号/重复号）",
     "- 每页给出 3-6 个要点（用 - 列表），必要时加一行讲者备注（Notes: ...）",
+    "- 每页必须加一行视觉说明：Visual: ...（描述布局/图表/流程/视觉重心）",
     "- 内容密度适配页数，不要出现空洞口号",
     "",
     "执行步骤（按顺序执行，全部成功后再回复 DONE）：",
@@ -149,6 +146,69 @@ function buildOutlineInstruction(jobId: string, input: PptJobInput) {
   ].join("\n");
 
   return { instruction, outDir, outlinePath };
+}
+
+function buildOutlineReviewInstruction(
+  input: PptJobInput,
+  opts: { draftOutlinePath: string; outlinePath: string }
+) {
+  const slideConfig = getRequestedSlideCount(input);
+  const topic = sanitizeOneLine(input.topic);
+  const language = sanitizeOneLine(input.language ?? "中文");
+  const audience = sanitizeOneLine(input.audience ?? "一般受众");
+  const tone = sanitizeOneLine(input.tone ?? "专业、清晰、偏实用");
+
+  const slideCountRule =
+    slideConfig.mode === "fixed"
+      ? `- 保持页数不变：必须仍为 ${slideConfig.count} 页`
+      : "- 保持现有 slide 数量，不要新增或删减页数";
+
+  const instruction = [
+    "你是 PPT 大纲审稿与精修助手。你可以使用 shell/文件工具在当前工作区内编辑文件。",
+    "目标：读取已生成的大纲初稿，做一次严格检查和精修，输出为更清晰、更可讲、更适合后续排版的版本。",
+    "",
+    `主题：${topic}`,
+    `语言：${language}`,
+    `受众：${audience}`,
+    `语气/风格：${tone}`,
+    "",
+    "输入与输出路径（必须严格一致）：",
+    `- 初稿：${opts.draftOutlinePath}`,
+    `- 精修后输出：${opts.outlinePath}`,
+    "",
+    "精修要求：",
+    "- 先完整阅读初稿，再统一精修；不要只改局部措辞。",
+    slideCountRule,
+    "- 保留并优化“## Visual System”区块，使其和整套 slides 更一致、更可执行。",
+    "- 保留 `## Slide N: 标题` 结构，编号必须连续，标题要更具体、更能支撑讲述。",
+    "- 每页仍保持 3-6 个要点；去掉重复、空泛或功能重叠的表达。",
+    "- 每页必须保留 `Visual: ...`，且描述足够具体，能直接指导后续 HTML 排版。",
+    "- `Notes: ...` 仅在确实能帮助讲述时保留或补充；避免把 bullet 重复一遍。",
+    "- 优先修正：叙事跳跃、教学链路不顺、前后重复、视觉骨架单一、结论不够聚焦。",
+    "",
+    "自检清单：",
+    "- 内容逻辑是否从开场到收束形成闭环",
+    "- 页面职责是否清晰，没有两页在做同一件事",
+    "- 视觉描述是否多样且和页面内容匹配",
+    "- 大纲是否适合直接进入下一步 HTML 生成",
+    "",
+    "执行步骤（按顺序执行，全部成功后再回复 DONE）：",
+    `1) 读取初稿：cat ${opts.draftOutlinePath}`,
+    `2) 精修后写回：${opts.outlinePath}`,
+    "3) 自检：确保文件存在、非空、编号连续、Visual 行完整",
+    "",
+    "最后只输出：DONE + 精修后大纲路径。",
+  ].join("\n");
+
+  return { instruction };
+}
+
+function buildOutlineSkillSystemPrompt(input: PptJobInput) {
+  return [
+    buildPptContentOutlineSystemPrompt(input),
+    "",
+    buildPptDesignOutlineSystemPrompt(input),
+  ].join("\n\n");
 }
 
 function buildDeckInstruction(
@@ -286,8 +346,10 @@ function buildDeckInstruction(
       "        <ul><li>短要点 1</li><li>短要点 2</li><li>短要点 3</li></ul>",
       "      </div>",
       "      <div style=\"width:220pt;\">",
-      "        <div data-oc-illust-slot=\"img-XX-hero\" data-oc-illust-prompt=\"图型=概念结构; 元素=本页核心概念+3子点(取自要点); 关系=中心->三个分支; 布局=中心圆+三分支卡片; 强调=核心概念(用accent); 文案=每节点<=6字;\" style=\"height:190pt;background:#E9E3D8;border-radius:10pt;\"></div>",
-      "        <p class=\"muted\" style=\"margin-top:8pt;font-size:14pt;line-height:1.25;\">图示/案例占位（无渐变）</p>",
+      "        <div style=\"height:190pt;background:#E9E3D8;border-radius:10pt;padding:14pt;display:flex;align-items:center;justify-content:center;\">",
+      "          <p class=\"muted\" style=\"font-size:16pt;\">概念结构 / 关系示意区</p>",
+      "        </div>",
+      "        <p class=\"muted\" style=\"margin-top:8pt;font-size:14pt;line-height:1.25;\">用原生 HTML/CSS 表达结构图示</p>",
       "      </div>",
       "    </div>",
       "  </div>",
@@ -359,7 +421,11 @@ function buildDeckInstruction(
       "    </div>",
       "    <div style=\"width:300pt;background:#FFFFFF;border-radius:12pt;padding:14pt 16pt;\">",
       "      <h2 style=\"margin-bottom:8pt;\">图表占位</h2>",
-      "      <div data-oc-illust-slot=\"img-XX-brief\" data-oc-illust-prompt=\"图型=简化图表; 元素=本页3个关键指标(取自要点); 关系=对比/趋势(按要点决定); 布局=图表居中+标签; 强调=最大/目标值(用accent); 文案=数字+短标签;\" style=\"height:190pt;background:#E9EEF8;border-radius:10pt;\"></div>",
+      "      <div style=\"height:190pt;background:#E9EEF8;border-radius:10pt;padding:12pt;display:flex;align-items:flex-end;gap:10pt;\">",
+      "        <div style=\"flex:1;height:56%;background:var(--accent);border-radius:6pt 6pt 0 0;\"></div>",
+      "        <div style=\"flex:1;height:80%;background:#9CC6FF;border-radius:6pt 6pt 0 0;\"></div>",
+      "        <div style=\"flex:1;height:42%;background:#C8DCF9;border-radius:6pt 6pt 0 0;\"></div>",
+      "      </div>",
       "      <p class=\"muted\" style=\"margin-top:8pt;font-size:14pt;\">图注/口径</p>",
       "    </div>",
       "  </div>",
@@ -395,6 +461,12 @@ function buildDeckInstruction(
     `- 大纲输入：${outlinePath}`,
     `- HTML slides 目录：${slidesDir}`,
     "",
+    "大纲消费规则（必须落实到 HTML）：",
+    "- 先完整读取大纲中的 `## Visual System`，把它当作整套 deck 的设计系统来源。",
+    "- 每页生成前，读取对应 slide 的 `Visual: ...`，并把它落实为页面布局、信息重心、图表/流程/对比结构。",
+    "- `Notes: ...` 只用于理解讲解顺序、强调重点和节奏，不要直接渲染到页面中。",
+    "- 优先使用原生 HTML/CSS 构建图表、流程、对比、坐标系、卡片和步骤结构，不依赖图片生成。",
+    "",
     "工具链硬约束（必须全部满足，否则本地转换会失败）：",
     "- HTML body 必须设置为 720pt × 405pt（16:9），所有可见文字必须放在 p/h1-h6/ul/ol 中。",
     "- 禁止任何 CSS 渐变（linear-gradient/radial-gradient）。",
@@ -402,18 +474,7 @@ function buildDeckInstruction(
     "- 图片引用规则：只允许本地相对路径 assets/...；禁止 http(s) 与 data: 图片。",
     "- 不要在 h1-h6/p/li/ul/ol 上使用 border/background/box-shadow；需要分隔线/底色/阴影请用 div 来实现。",
     "- div 内不要出现裸文本（比如直接写 Notes: ...）；必须用 p/h1-h6/ul/ol 包裹。",
-    "- 插图（按需使用）：默认不加图。仅当用纯文字不够直观、读者难以快速理解时，才添加 0-2 个插图槽位（用于帮助理解，而不是装饰）。",
-    "  - 适合用插图的场景：流程/循环、架构关系、对比矩阵、概念分层、因果链路、时序、分类映射",
-    "  - 不适合：纯结论页、简单要点罗列、已经一眼能懂的短列表（宁可不加图）",
-    "  - data-oc-illust-slot：全 deck 唯一的短 ID（必须包含两位页码前缀以避免冲突，例如 img-01-loop / img-02-arch；只含字母数字-_；不要保留模板里的 img-XX-... 占位符）",
-    "  - data-oc-illust-prompt：这是给后续“SVG 插图生成器”的工作规格，必须具体到可直接画出来；不要写‘画一张示意图/用简洁图形表达/根据内容自行拟合’之类空话。",
-    "    - 推荐写法（单行文本；用分号分隔字段；不要在值里使用双引号，避免 HTML 转义）：",
-    "      图型=循环/流程/层级/矩阵/时间线/架构/对比/因果; 元素=3-8个节点短标签; 关系=箭头/分组/包含/映射; 布局=左到右/上到下/环形/2x2/三层; 强调=需要高亮的节点(用accent); 文案=每个标签<=6字;",
-    "    - 若本页包含数字/比例/阈值：把关键数字写进 prompt（例如：在节点旁标注 23% / 2x / 7天）。不要编造与要点冲突的数据。",
-    "    - 示例 1：图型=循环; 元素=假设/实验/结果/修正; 关系=假设->实验->结果->修正->假设(闭环); 布局=顺时针圆环,每段一个节点; 强调=结果(用accent); 文案=每节点<=4字;",
-    "    - 示例 2：图型=架构; 元素=用户/前端/服务A/数据库; 关系=用户->前端->服务A->数据库(读写); 布局=左到右四列,服务A加虚线框; 强调=服务A(用accent); 文案=节点<=4字;",
-    "  - 槽位 div 必须有明确的宽高（pt 单位，建议在 style 内写 width/height），用于后续自动生成 SVG 并注入本地 PNG",
-    "  - 重要：插图槽位 div 内不要预先写 <img>（图片由后续流程自动生成并注入 slides/assets/<slotId>.png）。若你确实需要额外的本地图片元素，请用 <img src=\"assets/...\">，不要用 div background-image。",
+    "- 不要生成 data-oc-illust-slot / data-oc-illust-prompt / 自动插图相关结构。",
     "- 不要输出 Notes: 行（避免触发校验问题）。",
     "- 内容必须留出底部至少 0.5 英寸（约 36pt）空白，避免文字贴底或溢出。",
     "",
@@ -427,7 +488,7 @@ function buildDeckInstruction(
     slideCount
       ? `3) 基于大纲生成 ${slideCount} 个 HTML 页面到 ${slidesDir}（命名 01.html, 02.html...），内容要完整可读。`
       : `3) 基于大纲生成 N 个 HTML 页面到 ${slidesDir}（命名 01.html, 02.html... 到 N.html），内容要完整可读。`,
-    "4) 自检：确认 HTML 文件全部存在且非空；无渐变；无 div background-image；无 http(s)/data: 图片；无 div 裸文本；若需要示意图则包含插图槽位且写明 data-oc-illust-prompt。",
+    "4) 自检：确认 HTML 文件全部存在且非空；无渐变；无 div background-image；无 http(s)/data: 图片；无 div 裸文本；无插图槽位相关属性。",
     "",
     "最后只输出：DONE + slides 目录路径，不要输出大段解释。",
   ].join("\n");
@@ -458,8 +519,7 @@ function buildHtmlAdjustInstruction(
     "- 不要在 h1-h6/p/li/ul/ol 上使用 border/background/box-shadow",
     "- 任何文字距离底部 >= 0.5 英寸（约 36pt）",
     "- 删除 Notes: 行（不要输出 notes）",
-    "- 若页面中存在 data-oc-illust-slot / data-oc-illust-prompt 插图槽位：不要删除；默认不要改名/改 prompt；若你确实需要改变插图意图（prompt），为触发插图重新生成，请同时把 slotId 改成新的全 deck 唯一 ID（建议带两位页码前缀），并保留其宽高（pt）",
-    "- 若页面内已有 <img src=\"assets/...\">（自动插图），不要改成 http(s)/data:；也不要删除这些 img（除非用户明确要求）",
+    "- 不要新增或保留任何 data-oc-illust-slot / data-oc-illust-prompt 属性",
     "",
     "用户修改意见：",
     "```text",
@@ -497,8 +557,7 @@ function buildHtmlFixInstruction(slidesDir: string, errors: string) {
     "- 不要在 h1-h6/p/li/ul/ol 上使用 border/background/box-shadow",
     "- 任何文字距离底部 >= 0.5 英寸（约 36pt）",
     "- 删除 Notes: 行（不要输出 notes）",
-    "- 若页面中存在 data-oc-illust-slot / data-oc-illust-prompt 插图槽位：不要删除；默认不要改名/改 prompt；若你确实需要改变插图意图（prompt），为触发插图重新生成，请同时把 slotId 改成新的全 deck 唯一 ID（建议带两位页码前缀），并保留其宽高（pt）",
-    "- 若页面内已有 <img src=\"assets/...\">（自动插图），不要改成 http(s)/data:；也不要删除这些 img（除非为修复而必须且已在输出中说明）",
+    "- 不要新增或保留任何 data-oc-illust-slot / data-oc-illust-prompt 属性",
     "",
     "修复策略（尽量不伤内容）：",
     "- 优先通过：调整布局/断行/减小间距/两栏排版/微调字号 来消除溢出或底部安全区问题",
@@ -569,20 +628,6 @@ async function validateAndAutoFixHtmlSlides(opts: {
 
   for (let fixAttempt = 0; fixAttempt <= maxFixAttempts; fixAttempt++) {
     try {
-      // Ensure local illustrations are generated and injected before validation.
-      try {
-        await ensureIllustrationsForSlides({
-          jobId,
-          slidesDir,
-          client,
-          model: getSvgModelOverride(input),
-          log: (m) => log(jobId, m),
-        });
-      } catch (illErr) {
-        const im = illErr instanceof Error ? illErr.message : String(illErr);
-        log(jobId, `插图生成/注入失败（忽略，继续校验 HTML）：${im}`);
-      }
-
       await validateHtmlSlides(slidesDir);
       if (fixAttempt > 0) {
         log(jobId, `HTML 校验通过（已自动修复 ${fixAttempt} 次）。`);
@@ -620,20 +665,6 @@ async function validateAndAutoFixHtmlSlides(opts: {
 
       await ensureExpectedSlides(jobId, slidesDir, expectedSlideCount);
 
-      // Re-inject illustrations after LLM fixes HTML.
-      try {
-        await ensureIllustrationsForSlides({
-          jobId,
-          slidesDir,
-          client,
-          model: getSvgModelOverride(input),
-          log: (m) => log(jobId, m),
-        });
-      } catch (illErr2) {
-        const im2 = illErr2 instanceof Error ? illErr2.message : String(illErr2);
-        log(jobId, `插图生成/注入失败（忽略，继续流程）：${im2}`);
-      }
-
       // Snapshot versions for any changed slides (best-effort).
       try {
         const afterSlides = await listHtmlSlides(absSlidesDir);
@@ -670,55 +701,6 @@ function listHtmlSlides(absSlidesDir: string) {
           return a.localeCompare(b);
         })
     );
-}
-
-function extractIllustSlotIdsFromHtml(html: string) {
-  const out = new Set<string>();
-  const re = /data-oc-illust-slot\s*=\s*["']([^"']+)["']/gi;
-  let m: RegExpExecArray | null = null;
-  while ((m = re.exec(html))) {
-    const v = String(m[1] || "").trim();
-    if (v) out.add(v);
-  }
-  return Array.from(out);
-}
-
-type IllustrationSpecSlot = {
-  slideFile: string;
-  slotId: string;
-  prompt?: string;
-  targetPxW?: number;
-  targetPxH?: number;
-};
-
-async function readIllustrationsSpec(absAssetsDir: string): Promise<IllustrationSpecSlot[]> {
-  const specPath = path.join(absAssetsDir, "illustrations.spec.json");
-  let raw = "";
-  try {
-    raw = await fs.readFile(specPath, "utf-8");
-  } catch {
-    return [];
-  }
-  try {
-    const obj = JSON.parse(raw) as { slots?: unknown };
-    const slots = Array.isArray(obj?.slots) ? obj.slots : [];
-    return slots
-      .map((s): IllustrationSpecSlot | null => {
-        if (!s || typeof s !== "object") return null;
-        const ss = s as Record<string, unknown>;
-        if (typeof ss.slideFile !== "string" || typeof ss.slotId !== "string") return null;
-        return {
-          slideFile: ss.slideFile,
-          slotId: ss.slotId,
-          ...(typeof ss.prompt === "string" ? { prompt: ss.prompt } : {}),
-          ...(typeof ss.targetPxW === "number" ? { targetPxW: ss.targetPxW } : {}),
-          ...(typeof ss.targetPxH === "number" ? { targetPxH: ss.targetPxH } : {}),
-        };
-      })
-      .filter((v): v is IllustrationSpecSlot => Boolean(v));
-  } catch {
-    return [];
-  }
 }
 
 async function ensureExpectedSlides(jobId: string, slidesDir: string, expected: number) {
@@ -826,13 +808,16 @@ export async function runOutlineJob(jobId: string, input: PptJobInput) {
     setJob(jobId, { sessionId: session.id });
     log(jobId, `sessionId=${session.id}`);
 
-    const { instruction, outlinePath } = buildOutlineInstruction(jobId, input);
+    const { instruction, outlinePath, outDir } = buildOutlineInstruction(jobId, input);
+    const systemPrompt = buildOutlineSkillSystemPrompt(input);
 
     log(jobId, "向 LLM 发送大纲指令…");
+    log(jobId, "已注入 PPT 内容生成 + 视觉设计技能规则（叙事结构/标题/备注/视觉规划）。");
     await client.session.prompt({
       path: { id: session.id },
       body: {
         parts: [{ type: "text", text: instruction }],
+        system: systemPrompt,
         model: getModelOverride(input),
       },
     });
@@ -848,8 +833,72 @@ export async function runOutlineJob(jobId: string, input: PptJobInput) {
       if (n) log(jobId, `页数=0：模型在大纲中生成了 ${n} 页`);
     }
 
-    setJob(jobId, { outlinePath, outlineMarkdown });
-    pushEvent(jobId, { type: "outline", outlineMarkdown, ts: now() });
+    const draftOutlinePath = `${outDir}/outline.initial.md`;
+    const absDraftOutline = path.join(process.cwd(), draftOutlinePath);
+    await fs.writeFile(absDraftOutline, outlineMarkdown, "utf-8");
+    log(jobId, `已保存大纲初稿：${draftOutlinePath}`);
+
+    let finalOutlineMarkdown = outlineMarkdown;
+    let refinedOutlineMarkdownResult: string | undefined = undefined;
+
+    try {
+      log(jobId, "创建大纲审稿/精修 session…");
+      const reviewSession = unwrapData<{ id: string }>(
+        await client.session.create({
+          body: { title: `PPT Outline Review: ${input.topic.slice(0, 60)}` },
+        })
+      );
+
+      if (!reviewSession?.id) {
+        throw new Error("创建大纲精修 session 失败：未返回 session.id");
+      }
+
+      setJob(jobId, { sessionId: reviewSession.id });
+      log(jobId, `reviewSessionId=${reviewSession.id}`);
+
+      const reviewInstruction = buildOutlineReviewInstruction(input, {
+        draftOutlinePath,
+        outlinePath,
+      });
+
+      log(jobId, "向新会话发送大纲检查与精修指令…");
+      await client.session.prompt({
+        path: { id: reviewSession.id },
+        body: {
+          parts: [{ type: "text", text: reviewInstruction.instruction }],
+          system: systemPrompt,
+          model: getModelOverride(input),
+        },
+      });
+
+      const reviewedOutlineMarkdown = await readTextIfExists(absOutline);
+      if (!reviewedOutlineMarkdown || reviewedOutlineMarkdown.trim().length < 50) {
+        throw new Error("精修后的大纲为空或内容过短");
+      }
+
+      finalOutlineMarkdown = reviewedOutlineMarkdown;
+      refinedOutlineMarkdownResult = reviewedOutlineMarkdown;
+      log(jobId, "大纲检查与精修完成。");
+    } catch (reviewErr) {
+      const message = reviewErr instanceof Error ? reviewErr.message : String(reviewErr);
+      log(jobId, `大纲精修失败，回退到初稿：${message}`);
+      await fs.writeFile(absOutline, outlineMarkdown, "utf-8");
+      finalOutlineMarkdown = outlineMarkdown;
+    }
+
+    setJob(jobId, {
+      outlinePath,
+      outlineMarkdown: finalOutlineMarkdown,
+      draftOutlineMarkdown: outlineMarkdown,
+      refinedOutlineMarkdown: refinedOutlineMarkdownResult,
+    });
+    pushEvent(jobId, {
+      type: "outline",
+      outlineMarkdown: finalOutlineMarkdown,
+      draftOutlineMarkdown: outlineMarkdown,
+      refinedOutlineMarkdown: refinedOutlineMarkdownResult,
+      ts: now(),
+    });
     setStatus2(jobId, "awaiting_approval");
     log(jobId, "大纲生成完成，等待确认…");
   } catch (e) {
@@ -937,19 +986,6 @@ export async function runDeckJob(jobId: string, input: PptJobInput) {
     const maxFixes = 5;
     for (let fixed = 0; fixed <= maxFixes; fixed++) {
       try {
-        try {
-          await ensureIllustrationsForSlides({
-            jobId,
-            slidesDir,
-            client,
-            model: getSvgModelOverride(input),
-            log: (m) => log(jobId, m),
-          });
-        } catch (illErr) {
-          const im = illErr instanceof Error ? illErr.message : String(illErr);
-          log(jobId, `插图生成/注入失败（忽略，继续构建）：${im}`);
-        }
-
         await validateHtmlSlides(slidesDir);
         await buildDeck(jobId, input, slidesDir, pptxPath);
 
@@ -1148,19 +1184,6 @@ export async function runRenderFromHtmlJob(jobId: string, input: PptJobInput) {
     const maxFixes = 5;
     for (let fixed = 0; fixed <= maxFixes; fixed++) {
       try {
-        try {
-          await ensureIllustrationsForSlides({
-            jobId,
-            slidesDir,
-            client,
-            model: getSvgModelOverride(input),
-            log: (m) => log(jobId, m),
-          });
-        } catch (illErr) {
-          const im = illErr instanceof Error ? illErr.message : String(illErr);
-          log(jobId, `插图生成/注入失败（忽略，继续渲染 PPTX）：${im}`);
-        }
-
         await buildDeck(jobId, input, slidesDir, pptxPath);
         setJob(jobId, { pptxPath, thumbnailsPath: undefined });
         pushEvent(jobId, { type: "result", pptxPath, thumbnailsPath: null, ts: now() });
@@ -1277,22 +1300,6 @@ export async function runHtmlAdjustJob(
       },
     });
 
-    // After HTML adjustments, (re)generate and inject local illustrations for the affected slides
-    // so the active version matches what the user previews/renders.
-    try {
-      await ensureIllustrationsForSlides({
-        jobId,
-        slidesDir,
-        client,
-        model: getSvgModelOverride(input),
-        log: (m) => log(jobId, m),
-        slideFiles: scopeFiles,
-      });
-    } catch (illErr) {
-      const im = illErr instanceof Error ? illErr.message : String(illErr);
-      log(jobId, `插图生成/注入失败（忽略，继续保存版本）：${im}`);
-    }
-
     const changed: string[] = [];
     for (const f of scopeFiles) {
       try {
@@ -1313,205 +1320,6 @@ export async function runHtmlAdjustJob(
 
     setStatus2(jobId, "done");
     log(jobId, "HTML 调整完成。可刷新预览或继续渲染 PPTX。");
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    setJob(jobId, { status: "error", error: message });
-    pushEvent(jobId, { type: "error", message, ts: now() });
-  }
-}
-
-export async function runSvgAdjustJob(
-  jobId: string,
-  input: PptJobInput,
-  target: "all" | string,
-  feedback: string
-) {
-  const job = getJob(jobId);
-  if (!job) return;
-
-  setStatus2(jobId, "running");
-  log(jobId, "开始按意见调整图片（SVG）…");
-
-  try {
-    const { client } = await getOpencodeHandle();
-
-    if (!job.sessionId) {
-      log(jobId, "sessionId 缺失，创建新的 opencode session…");
-      const session = unwrapData<{ id: string }>(
-        await client.session.create({
-          body: { title: `PPT SVG Adjust: ${sanitizeOneLine(input.topic).slice(0, 60)}` },
-        })
-      );
-      if (!session?.id) {
-        throw new Error("创建 opencode session 失败：未返回 session.id（请检查服务鉴权/日志）");
-      }
-      setJob(jobId, { sessionId: session.id });
-      log(jobId, `sessionId=${session.id}`);
-    }
-
-    const sessionId = getJob(jobId)?.sessionId;
-    if (!sessionId) throw new Error("缺少 sessionId：无法继续调整图片");
-
-    const slidesDir = `workspace/jobs/${jobId}/slides`;
-    const absSlidesDir = path.join(process.cwd(), slidesDir);
-    const files = await listHtmlSlides(absSlidesDir);
-    if (files.length === 0) {
-      throw new Error(`未找到 HTML slides（目录为空）：${slidesDir}`);
-    }
-
-    if (target !== "all") {
-      const normalized = path.posix.basename(target);
-      if (!/\.html$/i.test(normalized)) {
-        throw new Error("target 必须是 .html 文件名或 all");
-      }
-      if (!files.includes(normalized)) {
-        throw new Error(`目标 HTML 不存在：${normalized}`);
-      }
-      target = normalized;
-    }
-
-    // 图片已变化，旧 PPTX/缩略图可能过期；先清理产物引用。
-    setJob(jobId, { pptxPath: undefined, thumbnailsPath: undefined });
-
-    const scopeFiles =
-      target === "all"
-        ? files
-        : files.filter((f) => f === path.posix.basename(String(target)));
-
-    const absAssetsDir = path.join(absSlidesDir, "assets");
-    const specSlots = await readIllustrationsSpec(absAssetsDir);
-    const promptBySlotId = new Map<string, string>();
-    for (const s of specSlots) {
-      if (s.prompt && !promptBySlotId.has(s.slotId)) promptBySlotId.set(s.slotId, s.prompt);
-    }
-
-    const slotsInScope = new Map<string, { slotId: string; slideFiles: Set<string>; prompt?: string }>();
-    for (const slideFile of scopeFiles) {
-      // Union: spec + HTML parse (spec might be stale).
-      const fromSpec = specSlots.filter((s) => s.slideFile === slideFile).map((s) => s.slotId);
-      let html = "";
-      try {
-        html = await fs.readFile(path.join(absSlidesDir, slideFile), "utf-8");
-      } catch {
-        html = "";
-      }
-      const fromHtml = html ? extractIllustSlotIdsFromHtml(html) : [];
-      const ids = Array.from(new Set([...fromSpec, ...fromHtml]));
-      for (const slotId of ids) {
-        const cur = slotsInScope.get(slotId) ?? {
-          slotId,
-          slideFiles: new Set<string>(),
-          prompt: promptBySlotId.get(slotId),
-        };
-        cur.slideFiles.add(slideFile);
-        if (!cur.prompt) cur.prompt = promptBySlotId.get(slotId);
-        slotsInScope.set(slotId, cur);
-      }
-    }
-
-    const candidates = Array.from(slotsInScope.values()).sort((a, b) =>
-      a.slotId.localeCompare(b.slotId)
-    );
-
-    if (candidates.length === 0) {
-      if (target !== "all") {
-        throw new Error("该页面没有图片槽位，无法进行图片应用调整。");
-      }
-      log(jobId, "未检测到任何图片槽位（data-oc-illust-slot），跳过图片调整。");
-      setStatus2(jobId, "done");
-      return;
-    }
-
-    const svgEdits: { slotId: string; svgRel: string; slideHint: string; prompt?: string }[] = [];
-    for (const c of candidates) {
-      const svgRel = `${slidesDir}/assets/${c.slotId}.svg`;
-      const svgAbs = path.join(process.cwd(), svgRel);
-      try {
-        const st = await fs.stat(svgAbs);
-        if (st.size <= 0) continue;
-      } catch {
-        continue;
-      }
-      const slideHint = Array.from(c.slideFiles).sort().join(", ");
-      svgEdits.push({ slotId: c.slotId, svgRel, slideHint, prompt: c.prompt });
-    }
-
-    if (svgEdits.length === 0) {
-      throw new Error("未找到可调整的 SVG 文件（assets/*.svg）。请先生成插图后再试。");
-    }
-
-    const items = svgEdits
-      .map((x, idx) => {
-        const lines = [
-          `${idx + 1}) slotId=${x.slotId}`,
-          `- 文件：${x.svgRel}`,
-          `- 页面：${x.slideHint}`,
-        ];
-        if (x.prompt?.trim()) lines.push(`- 插图意图：${sanitizeOneLine(x.prompt).slice(0, 240)}`);
-        return lines.join("\n");
-      })
-      .join("\n\n");
-
-    const instruction = [
-      "你是 PPT 图片调整助手（SVG）。",
-      "你可以使用 shell/文件工具在当前工作区内编辑文件。",
-      "目标：根据用户的修改意见，调整指定 SVG 文件的内容。不要修改任何 HTML 文件。",
-      "",
-      `用户修改意见（务必严格落实）：\n${sanitizeMultiline(feedback).slice(0, 8000)}`,
-      "",
-      "需要调整的 SVG 文件如下（逐个修改）：",
-      items,
-      "",
-      "SVG 硬性要求（必须全部满足）：",
-      "- 仅编辑上面列出的 SVG 文件，不要编辑/创建其他文件",
-      "- 保持每个 SVG 根元素的 width/height/viewBox 数值不变（避免 PNG 尺寸错乱）",
-      "- 不要使用 <image>、<foreignObject> 或任何外链资源；不要嵌入位图",
-      "- 只用基础矢量元素：<path>/<rect>/<circle>/<line>/<text>",
-      "- 线条端点与拐角：stroke-linecap/linejoin=round；避免过细线条",
-      "- 若使用文字：仅用 Arial；字号不要小于 14px；文字尽量少",
-      "- 画面四周留白，避免贴边被裁切；元素对齐、间距一致",
-      "",
-      "执行步骤（按顺序执行，全部成功后再回复 DONE）：",
-      "1) 逐个打开并修改 SVG 文件，落实修改意见；保持尺寸属性不变",
-      "2) 自检：每个 SVG 文件存在且非空；XML/SVG 语法正确；不包含禁止标签",
-      "3) 最后只输出：DONE",
-    ].join("\n");
-
-    await client.session.prompt({
-      path: { id: sessionId },
-      body: {
-        parts: [{ type: "text", text: instruction }],
-        model: getSvgModelOverride(input),
-      },
-    });
-
-    // Force PNG re-rasterization so the HTML preview picks up SVG edits.
-    for (const x of svgEdits) {
-      const pngAbs = path.join(absAssetsDir, `${x.slotId}.png`);
-      try {
-        await fs.unlink(pngAbs);
-      } catch {
-        // ignore
-      }
-    }
-
-    try {
-      await ensureIllustrationsForSlides({
-        jobId,
-        slidesDir,
-        client,
-        model: getSvgModelOverride(input),
-        log: (m) => log(jobId, m),
-        slideFiles: scopeFiles,
-        maxTotalSlots: Math.max(50, svgEdits.length + 8),
-      });
-    } catch (illErr) {
-      const im = illErr instanceof Error ? illErr.message : String(illErr);
-      log(jobId, `图片重新渲染失败：${im}`);
-    }
-
-    setStatus2(jobId, "done");
-    log(jobId, "图片调整完成。可刷新预览或继续渲染 PPTX。");
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     setJob(jobId, { status: "error", error: message });

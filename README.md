@@ -1,6 +1,6 @@
 # OpenCode PPT Studio
 
-一个 PPT 生成 Agent：在网页填写主题与约束，后端用 `@opencode-ai/sdk` 驱动 LLM 先产出可编辑大纲，再生成 HTML slides，最后本地构建 `deck.pptx`。
+一个 PPT 生成 Agent：在网页填写主题与约束，后端用 `@opencode-ai/sdk` 驱动 LLM 先产出大纲初稿，再开启新会话做检查与精修，然后生成 HTML slides，最后本地构建 `deck.pptx`。
 
 ## 项目截图
 
@@ -13,11 +13,14 @@
 ## 功能与特点
 
 - 大纲优先：`生成大纲 -> 人工可编辑 -> 确认生成`，避免一上来就“黑盒出 PPT”。
+- 双阶段大纲：先生成初稿，再新建会话做检查与精修；前端可切换 `初稿 / 精修版 / 当前编辑内容`。
+- 技能融合：大纲阶段会同时注入“PPT内容生成”和“PPT视觉设计”约束，输出统一的 `## Visual System` 和逐页 `Visual: ...`。
 - 双模式生成：
   - `preview`：只生成 HTML slides，直接在页面 iframe 预览
   - `pptx`：基于 HTML slides 本地构建 PPTX
 - 自动校验与自修复：生成 HTML 后会用 Playwright 做尺寸/溢出校验；失败则在同一个 session 内多轮让 LLM 修复 HTML，再重试本地构建。
 - HTML 调整回路：用户输入“修改意见”，后端直接修改已生成的 HTML slides，并为变更创建版本快照。
+- 无图片生成链路：不再生成插图/SVG 素材；HTML 直接消费 `Visual System`、`Visual`、`Notes`，优先用原生 HTML/CSS 构建图表、流程、卡片和对比结构。
 - Slide 版本管理：每个 `01.html/02.html/...` 都有版本历史，可在页面切换“当前激活版本”。
 - 任务可恢复：任务状态持久化到 `workspace/jobs/<jobId>/job.json`，页面可从 jobId 恢复输入/日志/大纲，并继续调整/渲染。
 - 可嵌入或连接 opencode server：
@@ -75,7 +78,8 @@ cp opencode.example.json opencode.json
 
 - `src/app`：Next.js App Router UI
 - `src/app/api`：API Routes（PPT jobs + opencode config）
-- `src/lib/runJob.ts`：任务执行主流程（outline / html / validate&fix / build pptx / adjust / render）
+- `src/lib/runJob.ts`：任务执行主流程（outline draft / outline refine / html / validate&fix / build pptx / adjust / render）
+- `src/lib/pptContentSkill.ts`：大纲阶段的内容与视觉技能提示拼装
 - `scripts/build_deck.cjs`：把 `workspace/.../slides/*.html` 转成 `deck.pptx`（pptxgenjs + `pptx/scripts/html2pptx.js`）
 - `scripts/validate_slides.mjs`：用 Playwright 校验 HTML body 尺寸与 overflow
 - `workspace/`：任务持久化与产物目录（已加入 `.gitignore`）
@@ -85,12 +89,16 @@ cp opencode.example.json opencode.json
 
 1) `POST /api/ppt/jobs` 创建任务，后台启动 `runOutlineJob()`：
    - 创建 opencode session
-   - 生成并落盘 `workspace/jobs/<jobId>/outline.md`
+   - 生成并落盘大纲初稿 `workspace/jobs/<jobId>/outline.initial.md`
+   - 新建会话，对初稿做检查与精修，再输出 `workspace/jobs/<jobId>/outline.md`
+   - 同时保留 `draftOutlineMarkdown` / `refinedOutlineMarkdown`
    - 状态进入 `awaiting_approval`，前端可编辑大纲
 
 2) `POST /api/ppt/jobs/<jobId>/approve` 确认生成：
+   - 可在前端切换初稿/精修版，或直接编辑当前内容
    - 可携带编辑后的 `outlineMarkdown` 覆盖落盘
    - 以新 session 生成 HTML slides（`workspace/jobs/<jobId>/slides/01.html ...`）
+   - HTML 生成会显式消费 `## Visual System`、逐页 `Visual: ...` 和 `Notes: ...`
    - `preview` 模式：只生成并校验 HTML，页面预览 + 允许继续调整
    - `pptx` 模式：校验 HTML 后本地构建 `deck.pptx`（失败会触发 LLM 修复重试）
 
@@ -105,8 +113,8 @@ PPT Jobs：
 
 - `GET /api/ppt/jobs`：列出本地 `workspace/jobs` 的任务摘要
 - `POST /api/ppt/jobs`：创建任务（后台生成大纲） -> `{ jobId }`
-- `GET /api/ppt/jobs/<jobId>`：获取任务状态/日志/下载链接
-- `GET /api/ppt/jobs/<jobId>/events`：SSE 推进度（log/status/outline/result）
+- `GET /api/ppt/jobs/<jobId>`：获取任务状态/日志/下载链接，包含 `draftOutlineMarkdown` 和 `refinedOutlineMarkdown`
+- `GET /api/ppt/jobs/<jobId>/events`：SSE 推进度（log/status/outline/result），`outline` 事件包含 draft/refined/current 三个版本
 - `POST /api/ppt/jobs/<jobId>/approve`：确认大纲并开始生成（`buildMode=preview|pptx`）
 - `GET /api/ppt/jobs/<jobId>/slides`：列出 HTML slides 与版本元信息
 - `POST /api/ppt/jobs/<jobId>/slides/adjust`：按意见修改 HTML slides

@@ -45,7 +45,6 @@ export async function POST(
   const nextInput: PptJobInput = {
     ...job.input,
     model: typeof obj.model === "string" ? obj.model : job.input.model,
-    svgModel: typeof obj.svgModel === "string" ? obj.svgModel : job.input.svgModel,
   };
 
   setJob(jobId, { input: nextInput, error: undefined, status: "queued" });
